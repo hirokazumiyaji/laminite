@@ -1,0 +1,111 @@
+"""InMemorySpanExporter tests for laminite-opentelemetry (#30)."""
+
+from __future__ import annotations
+
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
+
+from laminite import Laminite
+from laminite.testing import TestClient
+from laminite_opentelemetry import instrument_app
+
+
+def _setup_tracer() -> tuple[TracerProvider, InMemorySpanExporter]:
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return provider, exporter
+
+
+def test_span_name_and_http_route_for_matched_path() -> None:
+    provider, exporter = _setup_tracer()
+    app = Laminite()
+
+    @app.get("/items/{item_id}")
+    def read_item(item_id: int) -> dict[str, int]:
+        return {"item_id": item_id}
+
+    instrument_app(app, tracer_provider=provider)
+
+    client = TestClient(app)
+    assert client.get("/items/123").json() == {"item_id": 123}
+    client.close()
+
+    spans = exporter.get_finished_spans()
+    server = [
+        s
+        for s in spans
+        if s.kind.name == "SERVER"
+        or "http" in (s.name or "").lower()
+        or s.name.startswith("GET")
+    ]
+    assert server, spans
+    span = server[-1]
+    assert span.name == "GET /items/{item_id}"
+    assert span.attributes is not None
+    assert span.attributes.get("http.route") == "/items/{item_id}"
+
+
+def test_unhandled_exception_recorded_on_span() -> None:
+    provider, exporter = _setup_tracer()
+    app = Laminite()
+
+    @app.get("/boom")
+    def boom() -> None:
+        raise RuntimeError("fail")
+
+    instrument_app(app, tracer_provider=provider)
+
+    client = TestClient(app)
+    assert client.get("/boom").status_code == 500
+    client.close()
+
+    spans = exporter.get_finished_spans()
+    assert spans
+    span = spans[-1]
+    assert span.status.status_code == StatusCode.ERROR
+    assert any(e.name == "exception" for e in span.events)
+
+
+def test_traceparent_propagation() -> None:
+    provider, exporter = _setup_tracer()
+    app = Laminite()
+
+    @app.get("/")
+    def root() -> dict[str, str]:
+        return {"ok": "1"}
+
+    instrument_app(app, tracer_provider=provider)
+
+    # Valid W3C traceparent (version-traceid-spanid-flags)
+    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    client = TestClient(app)
+    assert client.get("/", headers={"traceparent": traceparent}).status_code == 200
+    client.close()
+
+    spans = exporter.get_finished_spans()
+    assert spans
+    span = spans[-1]
+    assert span.context is not None
+    assert format(span.context.trace_id, "032x") == "4bf92f3577b34da6a3ce929d0e0e4736"
+
+
+def test_instrument_after_freeze_raises() -> None:
+    app = Laminite()
+
+    @app.get("/")
+    def root() -> dict[str, str]:
+        return {"ok": "1"}
+
+    client = TestClient(app)
+    client.get("/")
+    client.close()
+
+    try:
+        instrument_app(app)
+        raised = False
+    except RuntimeError:
+        raised = True
+    assert raised

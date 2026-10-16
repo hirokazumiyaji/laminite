@@ -74,3 +74,5 @@ def on_exc(request: Request, exc: BaseException) -> None:
 app = Laminite(on_unhandled_exception=on_exc)
 app.add_middleware(OpenTelemetryMiddleware)  # pure ASGI middleware
 ```
+
+For a batteries-included setup, install the workspace package `laminite-opentelemetry` and call `instrument_app(app)` before the first request. It wraps the official ASGI middleware, sets `http.route` from `laminite.route`, and records unhandled exceptions on the active span.
