@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 import pytest
@@ -101,6 +102,56 @@ def test_request_cookies_lazy_parse() -> None:
     assert req._cookies is None
     assert req.cookies == {"a": "1", "b": "two"}
     assert req._cookies is not None
+
+
+def test_multiple_cookie_headers_are_merged() -> None:
+    app = Laminite()
+
+    @app.get("/me")
+    def me(
+        a: Annotated[str, Cookie()],
+        b: Annotated[str, Cookie()],
+    ) -> dict[str, str]:
+        return {"a": a, "b": b}
+
+    client = TestClient(app)
+    assert client.get("/me", headers={"cookie": "a=1; b=2"}).json() == {"a": "1", "b": "2"}
+    client.close()
+
+    # ASGI scopes can carry duplicate Cookie header fields.
+    messages: list[dict[str, object]] = []
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, object]) -> None:
+        messages.append(message)
+
+    async def run() -> None:
+        await app(
+            {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "http",
+                "path": "/me",
+                "raw_path": b"/me",
+                "query_string": b"",
+                "headers": [(b"cookie", b"a=1"), (b"cookie", b"b=2")],
+                "client": ("test", 50000),
+                "server": ("test", 80),
+            },
+            receive,
+            send,
+        )
+
+    asyncio.run(run())
+    body = b""
+    for message in messages:
+        if message["type"] == "http.response.body":
+            body += message.get("body", b"")  # type: ignore[operator]
+    assert body == b'{"a":"1","b":"2"}'
 
 
 def test_routes_without_cookie_args_do_not_require_cookie_header() -> None:

@@ -142,7 +142,9 @@ class Request:
     @property
     def cookies(self) -> dict[str, str]:
         if self._cookies is None:
-            self._cookies = parse_cookie_header(self.headers.get("cookie"))
+            parts = self.headers.getlist("cookie")
+            header = "; ".join(parts) if parts else None
+            self._cookies = parse_cookie_header(header)
         return self._cookies
 
     @property
