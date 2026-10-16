@@ -373,9 +373,11 @@ def build_pipeline(
                 else:
                     result = await _call_handler(handler, kwargs, route)
 
-                if stack is not None:
-                    await stack.__aexit__(None, None, None)
-                    stack = None
+                # Render before successful cleanup so encode failures can roll back.
+                status = _resolve_status(status_code_opt, result)
+                status_out, headers, body = render_result(
+                    result, status_code=status, encoder=encoder
+                )
             except BaseException as exc:
                 if stack is not None:
                     try:
@@ -385,20 +387,18 @@ def build_pipeline(
                     finally:
                         stack = None
                     if suppress:
-                        result = None
+                        status_out, headers, body = render_result(
+                            None, status_code=204, encoder=encoder
+                        )
                     else:
                         raise
                 else:
                     raise
+            else:
+                if stack is not None:
+                    await stack.__aexit__(None, None, None)
+                    stack = None
 
-            status = _resolve_status(status_code_opt, result)
-            try:
-                status_out, headers, body = render_result(
-                    result, status_code=status, encoder=encoder
-                )
-            except (TypeError, msgspec.EncodeError):
-                logger.exception("Failed to encode response")
-                status_out, headers, body = error_json("Internal Server Error", 500)
             await send_response(
                 send, status_code=status_out, headers=headers, body=body, is_head=is_head
             )

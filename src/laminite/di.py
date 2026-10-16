@@ -184,6 +184,8 @@ async def run_providers(
     stack: Any,
 ) -> dict[type, Any]:
     values: dict[type, Any] = dict(app_values)
+    if request is not None:
+        values[Request] = request
     for spec in specs:
         kwargs: dict[str, Any] = {}
         # Rebuild kwargs by parameter name from the wrapped callable's underlying function
