@@ -241,24 +241,24 @@ async def send_streaming_response(
                     await send({"type": "http.response.body", "body": data, "more_body": True})
         await send({"type": "http.response.body", "body": b"", "more_body": False})
     finally:
-        if pending_cf is not None and not pending_cf.done():
-            # Cancellation does not stop the worker. Temporarily uncancel so we
-            # can await completion without blocking the event loop synchronously.
-            task = asyncio.current_task()
-            cancel_count = task.cancelling() if task is not None else 0
+        # Cancellation does not stop a worker next(). Temporarily uncancel so
+        # wait+close both complete before cancellation is restored.
+        task = asyncio.current_task()
+        cancel_count = task.cancelling() if task is not None else 0
+        for _ in range(cancel_count):
+            assert task is not None
+            task.uncancel()
+        try:
+            if pending_cf is not None and not pending_cf.done():
+                await asyncio.wrap_future(pending_cf, loop=loop)
+            if is_async:
+                await _force_close_async_iterator(iterator)
+            else:
+                await loop.run_in_executor(_STREAM_EXECUTOR, _sync_close, iterator)
+        finally:
             for _ in range(cancel_count):
                 assert task is not None
-                task.uncancel()
-            try:
-                await asyncio.wrap_future(pending_cf, loop=loop)
-            finally:
-                for _ in range(cancel_count):
-                    assert task is not None
-                    task.cancel()
-        if is_async:
-            await _force_close_async_iterator(iterator)
-        else:
-            await loop.run_in_executor(_STREAM_EXECUTOR, _sync_close, iterator)
+                task.cancel()
 
 
 def error_json(detail: Any, status_code: int) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
