@@ -40,11 +40,11 @@ Quick in-process pass (`uv run python -m benchmarks.run_micro --quick`), mean ns
 
 | Scenario | Laminite | Starlette | FastAPI | Litestar |
 |---|---:|---:|---:|---:|
-| S1 | 34580 | 41018 | 60734 | 46439 |
-| S2 | 36534 | 40067 | 69967 | 47554 |
-| S3 | 38090 | 43388 | 79222 | 49129 |
-| S4 | 35422 | 44905 | 77652 | 56683 |
-| S5 | 32581 | 40003 | 49042 | 54539 |
+| S1 | 35717 | 41297 | 107654 | 43648 |
+| S2 | 40737 | 43055 | 77220 | 52657 |
+| S3 | 38915 | 45738 | 78276 | 51916 |
+| S4 | 38286 | 48814 | 76759 | 64568 |
+| S5 | 34980 | 45691 | 52849 | 62053 |
 
 Environment for the table above:
 
@@ -52,5 +52,6 @@ Environment for the table above:
 - OS: macOS (darwin)
 - Python: 3.12
 - Notes: single-process quick mode; treat as indicative. Prefer a dedicated host + full `pyperf` run for publication numbers.
+- Hot-path work (#23): interleaved A/B against the v0.1.0 tree on the same machine showed lower Laminite latency on S1–S5 (about 0.1–2% on trimmed means).
 
 CI runs `benchmarks.run_micro --quick` and posts results to the job summary without failing the workflow.

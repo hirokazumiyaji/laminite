@@ -102,6 +102,9 @@ class CompiledRoute:
     provided_arg_names: dict[str, type]
     app_values: dict[type[Any], Any] = field(default_factory=dict[type[Any], Any])
     kw_template: dict[str, Any] = field(default_factory=dict[str, Any])
+    path_params_only: bool = False
+    needs_exit_stack: bool = False
+    bare_call: bool = False
 
 
 def compile_route(
@@ -220,6 +223,8 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
     }
     query_key_to_name = {(b.alias or b.name): b.name for b in bindings if b.source == "query"}
     list_query_names = frozenset(b.name for b in bindings if b.source == "query" and b.is_list)
+    needs_query = any(b.source == "query" for b in bindings)
+    needs_headers = any(b.source == "header" for b in bindings)
 
     app_values = dict(registry.app_values())
     kw_template: dict[str, Any] = {}
@@ -230,6 +235,16 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
                 kw_template[b.name] = app_values[b.dep_type]
             else:
                 provided_arg_names[b.name] = b.dep_type
+
+    path_params_only = params_type is not None and not needs_query and not needs_headers
+    needs_exit_stack = any(p.kind in {"sync_cm", "async_cm"} for p in request_providers)
+    bare_call = (
+        not kw_template
+        and not needs_request
+        and params_type is None
+        and body_binding is None
+        and not provided_arg_names
+    )
 
     return CompiledRoute(
         handler=handler,
@@ -245,12 +260,15 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
         body_decoder=body_decoder,
         needs_request=needs_request,
         request_arg_names=request_arg_names,
-        needs_query=any(b.source == "query" for b in bindings),
-        needs_headers=any(b.source == "header" for b in bindings),
+        needs_query=needs_query,
+        needs_headers=needs_headers,
         request_providers=request_providers,
         provided_arg_names=provided_arg_names,
         app_values=app_values,
         kw_template=kw_template,
+        path_params_only=path_params_only,
+        needs_exit_stack=needs_exit_stack,
+        bare_call=bare_call,
     )
 
 
@@ -260,11 +278,29 @@ def build_pipeline(
     max_body_size: int,
     max_query_fields: int,
 ) -> Callable[..., Any]:
+    # Bind frequently used fields as locals to avoid attribute lookups per request.
     handler = route.handler
     params_type = route.params_type
     body_binding = route.body_binding
     body_decoder = route.body_decoder
     status_code_opt = route.status_code
+    needs_request = route.needs_request
+    request_arg_names = route.request_arg_names
+    needs_query = route.needs_query
+    needs_headers = route.needs_headers
+    bindings = route.bindings
+    query_key_to_name = route.query_key_to_name
+    list_query_names = route.list_query_names
+    header_keys = route.header_keys
+    request_providers = route.request_providers
+    provided_arg_names = route.provided_arg_names
+    app_values = route.app_values
+    kw_template = route.kw_template
+    path_params_only = route.path_params_only
+    needs_exit_stack = route.needs_exit_stack
+    bare_call = route.bare_call
+    is_async = route.is_async
+    offload = route.offload
 
     async def pipeline(
         scope: dict[str, Any],
@@ -276,10 +312,11 @@ def build_pipeline(
         exception_handlers: Mapping[type, Callable[..., Any]],
     ) -> None:
         request: Request | None = None
-        kwargs = dict(route.kw_template)
+        kwargs: dict[str, Any] | None = None if bare_call else dict(kw_template)
 
         try:
-            if route.needs_request:
+            if needs_request:
+                assert kwargs is not None
                 request = Request(
                     scope,
                     receive,
@@ -287,30 +324,35 @@ def build_pipeline(
                     max_body_size=max_body_size,
                     max_query_fields=max_query_fields,
                 )
-                for name in route.request_arg_names:
+                for name in request_arg_names:
                     kwargs[name] = request
 
             if params_type is not None:
-                values: dict[str, Any] = {}
-                for b in route.bindings:
-                    if b.source == "path":
-                        values[b.name] = path_params[b.name]
-                if route.needs_query:
-                    raw_q = parse_query_pairs(scope.get("query_string", b""), max_query_fields)
-                    for key, value in raw_q:
-                        arg_name = route.query_key_to_name.get(key)
-                        if arg_name is None:
-                            continue
-                        if arg_name in route.list_query_names:
-                            values.setdefault(arg_name, []).append(value)
-                        else:
-                            values[arg_name] = value
-                if route.needs_headers:
-                    wanted = route.header_keys
-                    for key, value in scope.get("headers", []):
-                        name = wanted.get(key)
-                        if name is not None:
-                            values[name] = value.decode("latin-1")
+                assert kwargs is not None
+                if path_params_only:
+                    values: Mapping[str, Any] = path_params
+                else:
+                    collected: dict[str, Any] = {}
+                    for b in bindings:
+                        if b.source == "path":
+                            collected[b.name] = path_params[b.name]
+                    if needs_query:
+                        raw_q = parse_query_pairs(scope.get("query_string", b""), max_query_fields)
+                        for key, value in raw_q:
+                            arg_name = query_key_to_name.get(key)
+                            if arg_name is None:
+                                continue
+                            if arg_name in list_query_names:
+                                collected.setdefault(arg_name, []).append(value)
+                            else:
+                                collected[arg_name] = value
+                    if needs_headers:
+                        wanted = header_keys
+                        for key, value in scope.get("headers", []):
+                            name = wanted.get(key)
+                            if name is not None:
+                                collected[name] = value.decode("latin-1")
+                    values = collected
 
                 try:
                     converted: Mapping[str, Any] = msgspec.convert(
@@ -322,7 +364,7 @@ def build_pipeline(
                 kwargs.update(converted)
 
             if body_binding is not None and body_decoder is not None:
-                assert request is not None
+                assert request is not None and kwargs is not None
                 # Validate Content-Type before consuming the body so a mismatched
                 # client never gets to transfer up to max_body_size bytes.
                 content_type = request.headers.get("content-type")
@@ -351,24 +393,35 @@ def build_pipeline(
 
             stack: AsyncExitStack | None = None
             try:
-                if route.request_providers:
-                    stack = AsyncExitStack()
-                    await stack.__aenter__()
+                if request_providers:
+                    assert kwargs is not None
+                    if needs_exit_stack:
+                        stack = AsyncExitStack()
+                        await stack.__aenter__()
                     dep_values = await run_providers(
-                        route.request_providers,
-                        app_values=route.app_values,
+                        request_providers,
+                        app_values=app_values,
                         request=request,
                         stack=stack,
                     )
-                    for name, tp in route.provided_arg_names.items():
+                    for name, tp in provided_arg_names.items():
                         kwargs[name] = dep_values[tp]
 
-                if route.offload:
-                    result = await asyncio.to_thread(handler, **kwargs)
-                elif route.is_async:
-                    result = await handler(**kwargs)
+                if bare_call:
+                    if offload:
+                        result = await asyncio.to_thread(handler)
+                    elif is_async:
+                        result = await handler()
+                    else:
+                        result = handler()
                 else:
-                    result = handler(**kwargs)
+                    assert kwargs is not None
+                    if offload:
+                        result = await asyncio.to_thread(handler, **kwargs)
+                    elif is_async:
+                        result = await handler(**kwargs)
+                    else:
+                        result = handler(**kwargs)
 
                 if isinstance(result, StreamingResponse):
                     # The pipeline cannot emit a replacement body once the stream started.
