@@ -172,8 +172,7 @@ class Router[V]:
                 values.append("")
                 hit = _match_method(node.path, values, method)
                 values.pop()
-                # Path-capture must not override a more-specific leaf for this path.
-                if hit is not None and allowed is None:
+                if hit is not None:
                     return hit, None
                 if node.path.methods:
                     allowed = _union(allowed, _allow_set(node.path.methods))
@@ -201,9 +200,7 @@ class Router[V]:
             values.append("/".join(parts[index:]))
             hit = _match_method(node.path, values, method)
             values.pop()
-            # If a static/param leaf already owns this path, keep 405 from that leaf
-            # instead of letting {name:path} absorb the request.
-            if hit is not None and allowed is None:
+            if hit is not None:
                 return hit, None
             if node.path.methods:
                 allowed = _union(allowed, _allow_set(node.path.methods))

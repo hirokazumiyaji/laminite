@@ -220,18 +220,16 @@ def test_conflicting_path_param_names() -> None:
         router.add("/files/{other:path}", "POST", "b")
 
 
-def test_path_wildcard_does_not_override_more_specific_route() -> None:
-    from laminite.router import MethodNotAllowed
-
+def test_path_wildcard_matches_when_specific_route_method_differs() -> None:
+    """Like Starlette: wrong method on a leaf continues to {name:path}."""
     router: Router[str] = Router()
-    router.add("/{rest:path}", "GET", "catch")
+    router.add("/fixed/{rest:path}", "GET", "wild")
     router.add("/fixed/item", "POST", "post")
 
     assert router.resolve("POST", "/fixed/item").value == "post"
-    with pytest.raises(MethodNotAllowed) as exc_info:
-        router.resolve("GET", "/fixed/item")
-    assert "POST" in exc_info.value.allowed
-    assert router.resolve("GET", "/other/x").value == "catch"
+    match = router.resolve("GET", "/fixed/item")
+    assert match.value == "wild"
+    assert match.path_params == {"rest": "item"}
 
 
 def test_set_cookie_options() -> None:
