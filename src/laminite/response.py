@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Mapping
+from collections.abc import AsyncIterable, Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import msgspec
@@ -161,34 +162,24 @@ def _sync_next(iterator: Any) -> object:
     return next(iterator, _STREAM_SENTINEL)
 
 
+def _sync_close(iterator: Any) -> None:
+    close = getattr(iterator, "close", None)
+    if callable(close):
+        close()
+
+
 def _as_sync_iterator(content: Iterable[bytes | str]) -> Any:
     if hasattr(content, "__next__"):
         return content
     return iter(content)
 
 
-async def _force_close_stream_iterator(
-    iterator: Iterable[bytes | str] | AsyncIterable[bytes | str],
-) -> None:
-    """Call ``aclose``/``close`` without advancing (safe during concurrent next())."""
+async def _force_close_async_iterator(iterator: Any) -> None:
     aclose = getattr(iterator, "aclose", None)
     if callable(aclose):
         result = aclose()
         if hasattr(result, "__await__"):
             await result  # type: ignore[misc]
-        return
-    close = getattr(iterator, "close", None)
-    if callable(close):
-        await asyncio.to_thread(close)
-
-
-async def _iter_sync_chunks(iterator: Any) -> AsyncIterator[bytes | str]:
-    """Yield sync iterator chunks via ``asyncio.to_thread`` to avoid blocking the loop."""
-    while True:
-        chunk = await asyncio.to_thread(_sync_next, iterator)
-        if chunk is _STREAM_SENTINEL:
-            break
-        yield chunk  # type: ignore[misc]
 
 
 async def send_streaming_response(
@@ -198,12 +189,21 @@ async def send_streaming_response(
     is_head: bool,
 ) -> None:
     content = response.body_iterator
+    executor: ThreadPoolExecutor | None = None
     if hasattr(content, "__aiter__"):
         iterator: Any = aiter(content)  # type: ignore[arg-type]
         is_async = True
     else:
         iterator = _as_sync_iterator(content)  # type: ignore[arg-type]
         is_async = False
+        # One worker so next() and close() never race across threads.
+        executor = ThreadPoolExecutor(max_workers=1)
+
+    loop = asyncio.get_running_loop()
+
+    async def run_sync(fn: Any, *args: Any) -> Any:
+        assert executor is not None
+        return await loop.run_in_executor(executor, fn, *args)
 
     try:
         await send(
@@ -225,13 +225,23 @@ async def send_streaming_response(
                 if data:
                     await send({"type": "http.response.body", "body": data, "more_body": True})
         else:
-            async for chunk in _iter_sync_chunks(iterator):
-                data = _chunk_bytes(chunk)
+            while True:
+                chunk = await run_sync(_sync_next, iterator)
+                if chunk is _STREAM_SENTINEL:
+                    break
+                data = _chunk_bytes(chunk)  # type: ignore[arg-type]
                 if data:
                     await send({"type": "http.response.body", "body": data, "more_body": True})
         await send({"type": "http.response.body", "body": b"", "more_body": False})
     finally:
-        await _force_close_stream_iterator(iterator)
+        try:
+            if is_async:
+                await _force_close_async_iterator(iterator)
+            else:
+                await run_sync(_sync_close, iterator)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True)
 
 
 def error_json(detail: Any, status_code: int) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
