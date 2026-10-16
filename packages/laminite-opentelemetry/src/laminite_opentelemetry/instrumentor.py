@@ -64,10 +64,13 @@ def instrument_app(
 
     Must be called before the app is frozen. Sets span names to
     ``{method} {route}`` when a route matches, records unexpected exceptions,
-    and disables per-receive/send child spans by default.
+    and disables per-receive/send child spans by default. Idempotent: a second
+    call is a no-op.
     """
     if app.frozen:
         raise RuntimeError("instrument_app must be called before the app is frozen")
+    if getattr(app, "_laminite_otel_instrumented", False):
+        return app
 
     previous = app._on_unhandled_exception
 
@@ -86,4 +89,5 @@ def instrument_app(
         meter_provider=meter_provider,
         **options,
     )
+    app._laminite_otel_instrumented = True  # type: ignore[attr-defined]
     return app
