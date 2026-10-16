@@ -36,8 +36,17 @@ class Headers(Mapping[str, str]):
 class QueryParams(Mapping[str, str]):
     __slots__ = ("_items", "_multi")
 
-    def __init__(self, query_string: bytes) -> None:
-        pairs = parse_qsl(query_string.decode("latin-1"), keep_blank_values=True)
+    def __init__(self, query_string: bytes, *, max_num_fields: int | None = None) -> None:
+        try:
+            pairs = parse_qsl(
+                query_string.decode("latin-1"),
+                keep_blank_values=True,
+                max_num_fields=max_num_fields,
+            )
+        except ValueError as exc:
+            from laminite.exceptions import HTTPException
+
+            raise HTTPException(400, "Too many query fields") from exc
         multi: dict[str, list[str]] = {}
         for key, value in pairs:
             multi.setdefault(key, []).append(value)
@@ -62,6 +71,7 @@ class Request:
         "_body",
         "_headers",
         "_max_body_size",
+        "_max_query_fields",
         "_path_params",
         "_query_params",
         "_receive",
@@ -75,6 +85,7 @@ class Request:
         *,
         path_params: dict[str, str] | None = None,
         max_body_size: int = 1_048_576,
+        max_query_fields: int | None = 1000,
     ) -> None:
         self.scope = scope
         self._receive = receive
@@ -83,6 +94,7 @@ class Request:
         self._query_params: QueryParams | None = None
         self._body: bytes | None = None
         self._max_body_size = max_body_size
+        self._max_query_fields = max_query_fields
 
     @property
     def method(self) -> str:
@@ -105,7 +117,10 @@ class Request:
     @property
     def query_params(self) -> QueryParams:
         if self._query_params is None:
-            self._query_params = QueryParams(self.scope.get("query_string", b""))
+            self._query_params = QueryParams(
+                self.scope.get("query_string", b""),
+                max_num_fields=self._max_query_fields,
+            )
         return self._query_params
 
     @property
@@ -118,6 +133,7 @@ class Request:
 
     async def body(self) -> bytes:
         if self._body is None:
+            _reject_oversized_content_length(self.scope.get("headers", []), self._max_body_size)
             self._body = await _receive_body(self._receive, self._max_body_size)
         return self._body
 
@@ -126,6 +142,35 @@ class Request:
         if tp is Any:
             return msgspec.json.decode(data)  # type: ignore[no-any-return]
         return msgspec.json.decode(data, type=tp)
+
+
+def _reject_oversized_content_length(
+    headers: Sequence[tuple[bytes, bytes]], max_body_size: int
+) -> None:
+    from laminite.exceptions import HTTPException
+
+    for key, value in headers:
+        if key != b"content-length":
+            continue
+        raw = value.decode("latin-1").strip()
+        try:
+            length = int(raw)
+        except ValueError as exc:
+            raise HTTPException(400, "Invalid Content-Length") from exc
+        if length < 0:
+            raise HTTPException(400, "Invalid Content-Length")
+        if length > max_body_size:
+            raise HTTPException(413, "Payload Too Large")
+        return
+
+
+def is_json_content_type(content_type: str | None) -> bool:
+    if content_type is None:
+        return False
+    media = content_type.split(";", 1)[0].strip().lower()
+    return media == "application/json" or (
+        media.startswith("application/") and media.endswith("+json")
+    )
 
 
 async def _receive_body(receive: Any, max_body_size: int) -> bytes:

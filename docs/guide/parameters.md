@@ -37,7 +37,7 @@ async def bulk(items: Annotated[list[Item], Body()]):
     return {"count": len(items)}
 ```
 
-Missing or invalid path/query/header values yield 422. Invalid JSON bodies yield 400; schema mismatches yield 422; oversized bodies yield 413.
+Missing or invalid path/query/header values yield 422. Invalid JSON bodies yield 400; schema mismatches yield 422; oversized bodies yield 413. JSON body routes require `Content-Type: application/json` (or `application/*+json`); otherwise 415. Too many query fields yield 400 (`Laminite(max_query_fields=...)`).
 
 ## Supported path / query / header types
 

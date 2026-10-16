@@ -32,6 +32,24 @@ CONTENT_TYPE_OCTET = (b"content-type", b"application/octet-stream")
 # One encoder for every body, so success and error responses encode identically.
 _ENCODER = msgspec.json.Encoder()
 
+_HEADER_FORBIDDEN = frozenset("\r\n\x00")
+
+
+def validate_header_name(name: str) -> None:
+    if not name or _HEADER_FORBIDDEN.intersection(name):
+        raise ValueError(f"Invalid header name: {name!r}")
+
+
+def validate_header_value(value: str) -> None:
+    if _HEADER_FORBIDDEN.intersection(value):
+        raise ValueError(f"Invalid header value: {value!r}")
+
+
+def encode_header_pair(name: str, value: str) -> tuple[bytes, bytes]:
+    validate_header_name(name)
+    validate_header_value(value)
+    return name.lower().encode("latin-1"), value.encode("latin-1")
+
 
 def _append_headers(
     raw_headers: list[tuple[bytes, bytes]],
@@ -40,8 +58,9 @@ def _append_headers(
 ) -> None:
     if headers:
         for key, value in headers.items():
-            raw_headers.append((key.lower().encode("latin-1"), value.encode("latin-1")))
+            raw_headers.append(encode_header_pair(key, value))
     if media_type is not None:
+        validate_header_value(media_type)
         raw_headers.append((b"content-type", media_type.encode("latin-1")))
 
 

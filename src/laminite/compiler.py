@@ -39,7 +39,7 @@ from laminite.di import (
 )
 from laminite.exceptions import HTTPException
 from laminite.params import Body, Header, Query
-from laminite.request import Request, _Disconnect
+from laminite.request import Request, _Disconnect, is_json_content_type
 from laminite.response import (
     StreamingResponse,
     error_json,
@@ -63,6 +63,7 @@ class RouteInfo:
     status_code: int | None
     offload: bool
     path_param_names: frozenset[str]
+    max_body_size: int | None = None
 
 
 @dataclass(slots=True)
@@ -106,9 +107,15 @@ def compile_route(
     registry: DependencyRegistry,
     *,
     max_body_size: int,
+    max_query_fields: int,
 ) -> Callable[..., Any]:
     compiled = analyze_handler(info, registry)
-    return build_pipeline(compiled, max_body_size=max_body_size)
+    body_limit = info.max_body_size if info.max_body_size is not None else max_body_size
+    return build_pipeline(
+        compiled,
+        max_body_size=body_limit,
+        max_query_fields=max_query_fields,
+    )
 
 
 def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRoute:
@@ -249,6 +256,7 @@ def build_pipeline(
     route: CompiledRoute,
     *,
     max_body_size: int,
+    max_query_fields: int,
 ) -> Callable[..., Any]:
     handler = route.handler
     params_type = route.params_type
@@ -271,7 +279,11 @@ def build_pipeline(
         try:
             if route.needs_request:
                 request = Request(
-                    scope, receive, path_params=path_params, max_body_size=max_body_size
+                    scope,
+                    receive,
+                    path_params=path_params,
+                    max_body_size=max_body_size,
+                    max_query_fields=max_query_fields,
                 )
                 for name in route.request_arg_names:
                     kwargs[name] = request
@@ -282,10 +294,15 @@ def build_pipeline(
                     if b.source == "path":
                         values[b.name] = path_params[b.name]
                 if route.needs_query:
-                    raw_q = parse_qsl(
-                        scope.get("query_string", b"").decode("latin-1"),
-                        keep_blank_values=True,
-                    )
+                    try:
+                        raw_q = parse_qsl(
+                            scope.get("query_string", b"").decode("latin-1"),
+                            keep_blank_values=True,
+                            max_num_fields=max_query_fields,
+                        )
+                    except ValueError:
+                        await _send_error(send, "Too many query fields", 400, is_head)
+                        return
                     for key, value in raw_q:
                         arg_name = route.query_key_to_name.get(key)
                         if arg_name is None:
@@ -316,6 +333,10 @@ def build_pipeline(
                 if not raw and body_binding.has_default:
                     kwargs[body_binding.name] = body_binding.default
                 else:
+                    content_type = request.headers.get("content-type")
+                    if not is_json_content_type(content_type):
+                        await _send_error(send, "Unsupported Media Type", 415, is_head)
+                        return
                     try:
                         kwargs[body_binding.name] = body_decoder.decode(raw)
                     except msgspec.ValidationError as exc:
@@ -416,7 +437,11 @@ def build_pipeline(
             if exc_handler is not None:
                 if request is None:
                     request = Request(
-                        scope, receive, path_params=path_params, max_body_size=max_body_size
+                        scope,
+                        receive,
+                        path_params=path_params,
+                        max_body_size=max_body_size,
+                        max_query_fields=max_query_fields,
                     )
                 status_out, headers, body = await _run_exception_handler(exc_handler, request, exc)
             elif isinstance(exc, HTTPException):
