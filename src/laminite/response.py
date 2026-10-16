@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor, wait
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 import msgspec
@@ -242,9 +242,19 @@ async def send_streaming_response(
         await send({"type": "http.response.body", "body": b"", "more_body": False})
     finally:
         if pending_cf is not None and not pending_cf.done():
-            # Cancellation does not stop the worker; wait synchronously so close
-            # cannot race an in-flight next().
-            wait([pending_cf])
+            # Cancellation does not stop the worker. Temporarily uncancel so we
+            # can await completion without blocking the event loop synchronously.
+            task = asyncio.current_task()
+            cancel_count = task.cancelling() if task is not None else 0
+            for _ in range(cancel_count):
+                assert task is not None
+                task.uncancel()
+            try:
+                await asyncio.wrap_future(pending_cf, loop=loop)
+            finally:
+                for _ in range(cancel_count):
+                    assert task is not None
+                    task.cancel()
         if is_async:
             await _force_close_async_iterator(iterator)
         else:
