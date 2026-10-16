@@ -6,7 +6,7 @@ import inspect
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from dataclasses import dataclass
-from typing import Any, TypeVar, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, TypeVar, get_args, get_origin, get_type_hints
 
 from laminite.request import Request
 
@@ -125,7 +125,7 @@ def _build_provider_spec(func: Callable[..., Any]) -> ProviderSpec:
             inspect.Parameter.POSITIONAL_ONLY,
         ):
             raise TypeError(f"Unsupported parameter kind in provider {func!r}: {name}")
-        ann = hints.get(name, str)
+        ann = _unwrap_dependency_annotation(hints.get(name, str))
         if _is_request_annotation(ann):
             needs_request = True
             continue
@@ -138,6 +138,12 @@ def _build_provider_spec(func: Callable[..., Any]) -> ProviderSpec:
         param_types=tuple(param_types),
         needs_request=needs_request,
     )
+
+
+def _unwrap_dependency_annotation(ann: Any) -> Any:
+    if get_origin(ann) is Annotated:
+        return get_args(ann)[0]
+    return ann
 
 
 def _is_request_annotation(ann: Any) -> bool:
@@ -185,7 +191,7 @@ async def run_providers(
         target = _unwrap_callable(spec.func)
         hints = get_type_hints(target, include_extras=True)
         for name, _param in inspect.signature(target).parameters.items():
-            ann = hints.get(name, str)
+            ann = _unwrap_dependency_annotation(hints.get(name, str))
             if _is_request_annotation(ann):
                 if request is None:
                     raise RuntimeError("Request dependency required but Request was not created")

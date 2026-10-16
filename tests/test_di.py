@@ -194,6 +194,34 @@ def test_overrides() -> None:
         assert client.get("/").json() == {"name": "fake"}
 
 
+def test_provider_annotated_dependency() -> None:
+    from typing import Annotated
+
+    app = Laminite()
+
+    @dataclass
+    class Svc:
+        name: str
+
+    @dataclass
+    class Label:
+        text: str
+
+    app.provide(Svc, Svc("ok"))
+
+    @app.provider
+    def label(svc: Annotated[Svc, "meta"]) -> Label:
+        return Label(svc.name)
+
+    @app.get("/")
+    def root(label: Label) -> dict[str, str]:
+        return {"label": label.text}
+
+    client = TestClient(app)
+    assert client.get("/").json() == {"label": "ok"}
+    client.close()
+
+
 def test_provider_with_request_and_dependency() -> None:
     app = Laminite()
 
