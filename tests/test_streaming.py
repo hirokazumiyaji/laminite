@@ -142,3 +142,23 @@ def test_async_streaming_skips_empty_chunks() -> None:
     client = TestClient(app)
     assert client.get("/stream").content == b"z"
     client.close()
+
+
+def test_head_closes_sync_generator() -> None:
+    app = Laminite()
+    closed: list[str] = []
+
+    @app.get("/stream")
+    def stream() -> StreamingResponse:
+        def gen() -> Iterator[bytes]:
+            try:
+                yield b"secret"
+            finally:
+                closed.append("closed")
+
+        return StreamingResponse(gen())
+
+    client = TestClient(app)
+    assert client.head("/stream").content == b""
+    assert closed == ["closed"]
+    client.close()

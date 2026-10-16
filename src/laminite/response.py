@@ -154,6 +154,32 @@ def _chunk_bytes(chunk: bytes | str) -> bytes:
     return chunk
 
 
+async def _close_stream_iterator(
+    iterator: Iterable[bytes | str] | AsyncIterable[bytes | str],
+) -> None:
+    aclose = getattr(iterator, "aclose", None)
+    if callable(aclose):
+        result = aclose()
+        if hasattr(result, "__await__"):
+            await result  # type: ignore[misc]
+        return
+    close = getattr(iterator, "close", None)
+    if callable(close):
+        close()
+
+
+async def _drain_stream_iterator(
+    iterator: Iterable[bytes | str] | AsyncIterable[bytes | str],
+) -> None:
+    """Consume the iterator so generator ``finally`` blocks run (e.g. on HEAD)."""
+    if hasattr(iterator, "__aiter__"):
+        async for _ in iterator:  # type: ignore[union-attr]
+            pass
+    else:
+        for _ in iterator:  # type: ignore[union-attr]
+            pass
+
+
 async def send_streaming_response(
     send: Any,
     response: StreamingResponse,
@@ -167,22 +193,30 @@ async def send_streaming_response(
             "headers": list(response.raw_headers),
         }
     )
+    iterator = response.body_iterator
     if is_head:
+        try:
+            await _drain_stream_iterator(iterator)
+        finally:
+            await _close_stream_iterator(iterator)
         await send({"type": "http.response.body", "body": b"", "more_body": False})
         return
 
-    iterator = response.body_iterator
-    if hasattr(iterator, "__aiter__"):
-        async for chunk in iterator:  # type: ignore[union-attr]
-            data = _chunk_bytes(chunk)
-            if data:
-                await send({"type": "http.response.body", "body": data, "more_body": True})
-    else:
-        for chunk in iterator:  # type: ignore[union-attr]
-            data = _chunk_bytes(chunk)
-            if data:
-                await send({"type": "http.response.body", "body": data, "more_body": True})
-    await send({"type": "http.response.body", "body": b"", "more_body": False})
+    try:
+        if hasattr(iterator, "__aiter__"):
+            async for chunk in iterator:  # type: ignore[union-attr]
+                data = _chunk_bytes(chunk)
+                if data:
+                    await send({"type": "http.response.body", "body": data, "more_body": True})
+        else:
+            for chunk in iterator:  # type: ignore[union-attr]
+                data = _chunk_bytes(chunk)
+                if data:
+                    await send({"type": "http.response.body", "body": data, "more_body": True})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+    except BaseException:
+        await _close_stream_iterator(iterator)
+        raise
 
 
 def error_json(detail: Any, status_code: int) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
