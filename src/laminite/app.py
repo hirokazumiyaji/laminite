@@ -134,10 +134,10 @@ class Laminite:
         return self._frozen
 
     def set_overrides(self, overrides: Mapping[type, Any] | None) -> None:
-        """Store overrides applied on the next freeze (pre-freeze only).
+        """Store overrides applied on the next ``freeze`` (pre-freeze only).
 
-        Prefer ``TestClient(..., overrides=...)`` / ``http_with_overrides`` so a
-        frozen app is never mutated and overrides do not leak across tests.
+        Prefer ``TestClient(..., overrides=...)`` / ``http_with_overrides`` so
+        overrides do not rewrite the base registry or leak across tests.
         """
         if self._frozen:
             raise RuntimeError("Application is frozen; cannot set overrides")
@@ -148,18 +148,19 @@ class Laminite:
             return
         if overrides is not None:
             self._overrides = overrides
-        # Freeze always compiles against the base registry. Per-request/test
-        # overrides use http_with_overrides so they never rewrite app state.
-        self._http = self._build_http_asgi(self._registry)
+        # Apply freeze-time overrides to the primary ASGI app only; keep the
+        # base registry intact so http_with_overrides can still diverge per client.
+        registry = self._registry.with_overrides(self._overrides)
+        self._http = self._build_http_asgi(registry, primary=True)
         self._frozen = True
 
     def http_with_overrides(self, overrides: Mapping[type, Any]) -> ASGIApp:
         """Return an HTTP ASGI app with dependency overrides; does not mutate this app."""
         if not self._frozen:
             self.freeze()
-        return self._build_http_asgi(self._registry.with_overrides(overrides))
+        return self._build_http_asgi(self._registry.with_overrides(overrides), primary=False)
 
-    def _build_http_asgi(self, registry: DependencyRegistry) -> ASGIApp:
+    def _build_http_asgi(self, registry: DependencyRegistry, *, primary: bool) -> ASGIApp:
         pipelines: dict[int, Any] = {}
         router: Router[Any] = Router()
         for info in self._routes:
@@ -174,8 +175,7 @@ class Laminite:
             for method in info.methods:
                 router.add(info.path, method, pipeline)
 
-        # Keep the frozen app's router in sync when compiling the primary ASGI app.
-        if registry is self._registry:
+        if primary:
             self._router = router
 
         exception_handlers = self._exception_handlers
@@ -191,7 +191,7 @@ class Laminite:
         return app
 
     async def _http_before_freeze(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        self.freeze()
+        self.freeze(overrides=self._overrides)
         await self._http(scope, receive, send)
 
     async def _dispatch(
@@ -246,7 +246,7 @@ class Laminite:
                     if self._lifespan_factory is not None:
                         self._lifespan_cm = self._lifespan_factory(self)
                         await self._lifespan_cm.__aenter__()
-                    self.freeze()
+                    self.freeze(overrides=self._overrides)
                 except Exception as exc:
                     if self._lifespan_cm is not None:
                         try:

@@ -52,6 +52,18 @@ def test_overrides_do_not_leak_to_later_clients() -> None:
         assert client.get("/").json() == {"name": "real"}
 
 
+def test_freeze_overrides_still_apply_to_primary_app() -> None:
+    app = _app_with_svc()
+    app.freeze(overrides={Svc: Svc("frozen-fake")})
+
+    with TestClient(app) as client:
+        assert client.get("/").json() == {"name": "frozen-fake"}
+
+    # Per-client overrides still compile from the untouched base registry.
+    with TestClient(app, overrides={Svc: Svc("client-fake")}) as client:
+        assert client.get("/").json() == {"name": "client-fake"}
+
+
 def test_http_exception_handler_receives_413_from_body() -> None:
     app = Laminite(max_body_size=8)
 
