@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterable, Callable, Iterable, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Mapping
 from typing import Any
 
 import msgspec
@@ -208,9 +208,7 @@ async def _prime_and_close_stream_iterator(
     await _force_close_stream_iterator(iterator)
 
 
-async def _iter_sync_chunks(
-    iterator: Iterable[bytes | str],
-) -> Any:
+async def _iter_sync_chunks(iterator: Any) -> AsyncIterator[bytes | str]:
     """Yield sync iterator chunks via ``asyncio.to_thread`` to avoid blocking the loop."""
     while True:
         chunk = await asyncio.to_thread(_sync_next, iterator)
@@ -225,13 +223,6 @@ async def send_streaming_response(
     *,
     is_head: bool,
 ) -> None:
-    await send(
-        {
-            "type": "http.response.start",
-            "status": response.status_code,
-            "headers": list(response.raw_headers),
-        }
-    )
     content = response.body_iterator
     if hasattr(content, "__aiter__"):
         iterator: Any = content
@@ -239,6 +230,14 @@ async def send_streaming_response(
     else:
         iterator = _as_sync_iterator(content)  # type: ignore[arg-type]
         is_async = False
+
+    await send(
+        {
+            "type": "http.response.start",
+            "status": response.status_code,
+            "headers": list(response.raw_headers),
+        }
+    )
 
     if is_head:
         await _prime_and_close_stream_iterator(iterator)
