@@ -99,3 +99,14 @@ def test_not_found() -> None:
     router.add("/only", "GET", "x")
     with pytest.raises(NotFound):
         router.resolve("GET", "/missing")
+
+
+def test_failed_static_registration_rolls_back() -> None:
+    router: Router[str] = Router()
+    # Simulate a trie entry without a matching static map entry.
+    node = router._root.static.setdefault("ghost", router._root.__class__())
+    node.methods["GET"] = "stale"
+    with pytest.raises(ValueError):
+        router.add("/ghost", "GET", "new")
+    assert "/ghost" not in router._static
+    assert router.resolve("GET", "/ghost").value == "stale"

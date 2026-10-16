@@ -144,7 +144,8 @@ class Laminite:
             return
         if overrides is not None:
             self._overrides = overrides
-        registry = self._registry.with_overrides(self._overrides)
+        # Replace the registry so compilation and any later lookups share overrides.
+        self._registry = self._registry.with_overrides(self._overrides)
         pipelines: dict[int, Any] = {}
         new_router: Router[Any] = Router()
         for info in self._routes:
@@ -152,7 +153,7 @@ class Laminite:
             if key not in pipelines:
                 pipelines[key] = compile_route(
                     info,
-                    registry,
+                    self._registry,
                     max_body_size=self._max_body_size,
                     encoder=self._encoder,
                 )

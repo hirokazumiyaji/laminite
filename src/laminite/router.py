@@ -48,36 +48,46 @@ class Router[V]:
         method = method.upper()
         segments, param_names, is_static = _parse_template(path)
 
+        static_added = False
         if is_static:
             methods = self._static.setdefault(path, {})
             if method in methods:
                 raise ValueError(f"Duplicate route: {method} {path}")
             methods[method] = value
+            static_added = True
 
-        node = self._root
-        for segment, is_param, name in segments:
-            if is_param:
-                assert name is not None
-                if node.param is None:
-                    node.param = _Node()
-                    node.param_name = name
-                elif node.param_name != name:
-                    raise ValueError(
-                        f"Conflicting parameter names at the same position: "
-                        f"{node.param_name!r} vs {name!r}"
-                    )
-                node = node.param
-            else:
-                child = node.static.get(segment)
-                if child is None:
-                    child = _Node()
-                    node.static[segment] = child
-                node = child
+        try:
+            node = self._root
+            for segment, is_param, name in segments:
+                if is_param:
+                    assert name is not None
+                    if node.param is None:
+                        node.param = _Node()
+                        node.param_name = name
+                    elif node.param_name != name:
+                        raise ValueError(
+                            f"Conflicting parameter names at the same position: "
+                            f"{node.param_name!r} vs {name!r}"
+                        )
+                    node = node.param
+                else:
+                    child = node.static.get(segment)
+                    if child is None:
+                        child = _Node()
+                        node.static[segment] = child
+                    node = child
 
-        if method in node.methods:
-            raise ValueError(f"Duplicate route: {method} {path}")
-        node.methods[method] = value
-        node.param_names = param_names
+            if method in node.methods:
+                raise ValueError(f"Duplicate route: {method} {path}")
+            node.methods[method] = value
+            node.param_names = param_names
+        except Exception:
+            if static_added:
+                methods = self._static[path]
+                del methods[method]
+                if not methods:
+                    del self._static[path]
+            raise
 
     def resolve(self, method: str, path: str) -> Match[V]:
         method = method.upper()

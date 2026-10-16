@@ -194,6 +194,37 @@ def test_overrides() -> None:
         assert client.get("/").json() == {"name": "fake"}
 
 
+def test_override_replaces_provider_with_deps() -> None:
+    app = Laminite()
+    calls = {"n": 0}
+
+    @dataclass
+    class Dep:
+        pass
+
+    @dataclass
+    class Svc:
+        name: str
+
+    @app.provider
+    def dep() -> Dep:
+        calls["n"] += 1
+        return Dep()
+
+    @app.provider
+    def svc(dep: Dep) -> Svc:
+        calls["n"] += 1
+        return Svc("real")
+
+    @app.get("/")
+    def root(svc: Svc) -> dict[str, str]:
+        return {"name": svc.name}
+
+    with TestClient(app, overrides={Svc: Svc("fake")}) as client:
+        assert client.get("/").json() == {"name": "fake"}
+    assert calls["n"] == 0
+
+
 def test_no_di_in_pipeline_when_unused() -> None:
     from laminite.compiler import RouteInfo, analyze_handler, path_param_names
     from laminite.di import DependencyRegistry

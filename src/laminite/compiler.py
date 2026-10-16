@@ -379,8 +379,11 @@ def build_pipeline(
                     suppress = await stack.__aexit__(type(exc), exc, exc.__traceback__)
                     stack = None
                     if suppress:
+                        result = None
+                    else:
                         raise
-                raise
+                else:
+                    raise
 
             status = _resolve_status(status_code_opt, result)
             try:
