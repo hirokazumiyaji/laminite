@@ -126,14 +126,10 @@ def _build_provider_spec(func: Callable[..., Any]) -> ProviderSpec:
         ):
             raise TypeError(f"Unsupported parameter kind in provider {func!r}: {name}")
         ann = hints.get(name, str)
-        if ann is Request:
+        if _is_request_annotation(ann):
             needs_request = True
             continue
-        if not isinstance(ann, type) and get_origin(ann) is None:
-            # Still treat as dependency key
-            param_types.append(ann)  # type: ignore[arg-type]
-        else:
-            param_types.append(ann)  # type: ignore[arg-type]
+        param_types.append(ann)  # type: ignore[arg-type]
 
     return ProviderSpec(
         key=key,  # type: ignore[arg-type]
@@ -142,6 +138,17 @@ def _build_provider_spec(func: Callable[..., Any]) -> ProviderSpec:
         param_types=tuple(param_types),
         needs_request=needs_request,
     )
+
+
+def _is_request_annotation(ann: Any) -> bool:
+    if ann is Request:
+        return True
+    if isinstance(ann, type):
+        try:
+            return issubclass(ann, Request)
+        except TypeError:
+            return False
+    return getattr(ann, "__name__", None) == "Request"
 
 
 def _unwrap_iterator_type(ret: Any) -> type:
@@ -179,7 +186,7 @@ async def run_providers(
         hints = get_type_hints(target, include_extras=True)
         for name, _param in inspect.signature(target).parameters.items():
             ann = hints.get(name, str)
-            if ann is Request:
+            if _is_request_annotation(ann):
                 if request is None:
                     raise RuntimeError("Request dependency required but Request was not created")
                 kwargs[name] = request

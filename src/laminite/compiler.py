@@ -376,8 +376,12 @@ def build_pipeline(
                     stack = None
             except BaseException as exc:
                 if stack is not None:
-                    suppress = await stack.__aexit__(type(exc), exc, exc.__traceback__)
-                    stack = None
+                    try:
+                        suppress = await stack.__aexit__(type(exc), exc, exc.__traceback__)
+                    except BaseException as cleanup_exc:
+                        raise cleanup_exc from exc
+                    finally:
+                        stack = None
                     if suppress:
                         result = None
                     else:

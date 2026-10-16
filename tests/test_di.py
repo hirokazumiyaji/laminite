@@ -194,6 +194,33 @@ def test_overrides() -> None:
         assert client.get("/").json() == {"name": "fake"}
 
 
+def test_provider_with_request_and_dependency() -> None:
+    app = Laminite()
+
+    @dataclass
+    class Cfg:
+        prefix: str
+
+    app.provide(Cfg, Cfg("hi"))
+
+    @dataclass
+    class Greeting:
+        text: str
+
+    @app.provider
+    def greeting(cfg: Cfg, request: Request) -> Greeting:
+        name = request.headers.get("x-name") or "world"
+        return Greeting(f"{cfg.prefix} {name}")
+
+    @app.get("/")
+    def root(greeting: Greeting) -> dict[str, str]:
+        return {"text": greeting.text}
+
+    client = TestClient(app)
+    assert client.get("/", headers={"x-name": "laminite"}).json() == {"text": "hi laminite"}
+    client.close()
+
+
 def test_override_replaces_provider_with_deps() -> None:
     app = Laminite()
     calls = {"n": 0}
