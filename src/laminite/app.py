@@ -12,6 +12,7 @@ from laminite.di import DependencyRegistry
 from laminite.exceptions import HTTPException
 from laminite.response import error_json, send_response
 from laminite.router import Match, MethodNotAllowed, NotFound, Router, path_parameter_names
+from laminite.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger("laminite")
 
@@ -19,8 +20,6 @@ T = TypeVar("T")
 F = TypeVar("F", bound=Callable[..., Any])
 E = TypeVar("E", bound=BaseException)
 H = TypeVar("H", bound=Callable[..., Any])
-
-ASGIApp = Callable[..., Any]
 
 
 class Laminite:
@@ -203,7 +202,7 @@ class Laminite:
             for method in info.methods:
                 router.add(info.path, method, pipeline)
 
-        async def dispatcher(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        async def dispatcher(scope: Scope, receive: Receive, send: Send) -> None:
             await self._dispatch(scope, receive, send, router, self._exception_handlers)
 
         app: ASGIApp = dispatcher
@@ -211,15 +210,15 @@ class Laminite:
             app = cls(app, **options)
         return app
 
-    async def _http_before_freeze(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+    async def _http_before_freeze(self, scope: Scope, receive: Receive, send: Send) -> None:
         self.freeze(overrides=self._overrides)
         await self._http(scope, receive, send)
 
     async def _dispatch(
         self,
-        scope: dict[str, Any],
-        receive: Any,
-        send: Any,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
         router: Router[Any],
         exception_handlers: Mapping[type, Callable[..., Any]],
     ) -> None:
@@ -254,7 +253,7 @@ class Laminite:
             exception_handlers=exception_handlers,
         )
 
-    async def _lifespan(self, receive: Any, send: Any) -> None:
+    async def _lifespan(self, receive: Receive, send: Send) -> None:
         while True:
             message = await receive()
             if message["type"] == "lifespan.startup":
@@ -296,14 +295,16 @@ class Laminite:
                 await send({"type": "lifespan.shutdown.complete"})
                 return
 
-    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         scope_type = scope["type"]
         if scope_type == "http":
             await self._http(scope, receive, send)
         elif scope_type == "lifespan":
             await self._lifespan(receive, send)
-        else:
+        elif scope_type == "websocket":
             await send({"type": "websocket.close", "code": 1000})
+        else:
+            raise RuntimeError(f"Unsupported ASGI scope type: {scope_type!r}")
 
 
 # Re-export for typing convenience

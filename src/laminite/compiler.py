@@ -20,6 +20,7 @@ from typing import (
     Required,
     TypedDict,
     Union,
+    cast,
     get_args,
     get_origin,
     get_type_hints,
@@ -54,6 +55,8 @@ _QUERY_SCALARS: frozenset[type] = frozenset(
 
 logger = logging.getLogger("laminite")
 
+ArgSource = Literal["path", "query", "header", "body", "request", "dependency"]
+
 
 @dataclass(slots=True)
 class RouteInfo:
@@ -68,7 +71,7 @@ class RouteInfo:
 @dataclass(slots=True)
 class ArgBinding:
     name: str
-    source: str  # path | query | header | body | request | dependency
+    source: ArgSource
     annotation: Any
     default: Any
     has_default: bool
@@ -97,8 +100,8 @@ class CompiledRoute:
     needs_headers: bool
     request_providers: list[ProviderSpec]
     provided_arg_names: dict[str, type]
-    app_values: dict[type[Any], Any] = field(default_factory=dict)
-    kw_template: dict[str, Any] = field(default_factory=dict)
+    app_values: dict[type[Any], Any] = field(default_factory=dict[type[Any], Any])
+    kw_template: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 def compile_route(
@@ -302,11 +305,14 @@ def build_pipeline(
                             values[name] = value.decode("latin-1")
 
                 try:
-                    converted = msgspec.convert(values, params_type, strict=False)
+                    converted = cast(
+                        Mapping[str, Any],
+                        msgspec.convert(values, params_type, strict=False),
+                    )
                 except msgspec.ValidationError as exc:
                     await _send_error(send, str(exc), 422, is_head)
                     return
-                kwargs.update(converted)  # type: ignore[arg-type]
+                kwargs.update(converted)
 
             if body_binding is not None and body_decoder is not None:
                 assert request is not None
@@ -481,7 +487,7 @@ def _resolve_source(
     annotation: Any,
     path_params: frozenset[str],
     registry: DependencyRegistry,
-) -> tuple[str, str | None, type | None]:
+) -> tuple[ArgSource, str | None, type | None]:
     if name in path_params:
         return "path", None, None
 
@@ -489,7 +495,7 @@ def _resolve_source(
     # `Annotated[X, Marker]` take the same classification path.
     raw = _unwrap_optional(annotation)
     alias: str | None = None
-    marker_source: str | None = None
+    marker_source: ArgSource | None = None
     if get_origin(raw) is Annotated:
         args = get_args(raw)
         raw = args[0]

@@ -7,7 +7,17 @@ from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from types import UnionType
-from typing import Annotated, Any, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import (
+    Annotated,
+    Any,
+    Literal,
+    TypeVar,
+    Union,
+    assert_never,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from laminite.params import Body, Header, Query
 from laminite.request import Request
@@ -15,12 +25,14 @@ from laminite.request import Request
 T = TypeVar("T")
 F = TypeVar("F", bound=Callable[..., Any])
 
+ProviderKind = Literal["sync", "async", "sync_cm", "async_cm"]
+
 
 @dataclass(slots=True, frozen=True)
 class ProviderSpec:
     key: type
     func: Callable[..., Any]
-    kind: str  # "sync" | "async" | "sync_cm" | "async_cm"
+    kind: ProviderKind
     params: tuple[tuple[str, type], ...]
     needs_request: bool
 
@@ -97,7 +109,7 @@ def _build_provider_spec(func: Callable[..., Any]) -> ProviderSpec:
     if ret is None:
         raise TypeError(f"Provider {func!r} must have a return type annotation")
 
-    kind: str
+    kind: ProviderKind
     key: type
     wrapped: Callable[..., Any]
 
@@ -194,16 +206,17 @@ async def run_providers(
         values[Request] = request
     for spec in specs:
         kwargs = {name: values[tp] for name, tp in spec.params}
-        if spec.kind == "sync":
+        kind = spec.kind
+        if kind == "sync":
             values[spec.key] = spec.func(**kwargs)
-        elif spec.kind == "async":
+        elif kind == "async":
             values[spec.key] = await spec.func(**kwargs)
-        elif spec.kind == "sync_cm":
+        elif kind == "sync_cm":
             cm = spec.func(**kwargs)
             values[spec.key] = stack.enter_context(cm)
-        elif spec.kind == "async_cm":
+        elif kind == "async_cm":
             cm: AbstractAsyncContextManager[Any] = spec.func(**kwargs)
             values[spec.key] = await stack.enter_async_context(cm)
         else:
-            raise RuntimeError(f"Unknown provider kind: {spec.kind}")
+            assert_never(kind)
     return values

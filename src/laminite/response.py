@@ -8,7 +8,7 @@ import logging
 import sys
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any
+from typing import Any, cast
 
 import msgspec
 
@@ -108,7 +108,7 @@ def render_result(
     status_code: int,
 ) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
     """Render a handler return value to status, headers, body."""
-    renderer = _RENDERERS.get(type(result))
+    renderer = _RENDERERS.get(cast(type[Any], type(result)))
     if renderer is not None:
         return renderer(result, status_code)
     if isinstance(result, Response):

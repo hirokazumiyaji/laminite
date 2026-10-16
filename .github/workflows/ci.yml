@@ -39,8 +39,14 @@ jobs:
       - name: Pyright
         run: uv run pyright
 
-      - name: Pytest
-        run: uv run pytest
+      - name: Pytest with coverage
+        run: |
+          {
+            echo "## Coverage (Python ${{ matrix.python-version }})"
+            echo '```'
+            uv run pytest --cov=laminite --cov-report=term-missing --cov-fail-under=90
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   microbench:
     name: Microbenchmarks
