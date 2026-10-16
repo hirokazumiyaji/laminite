@@ -149,6 +149,7 @@ def _reject_oversized_content_length(
 ) -> None:
     from laminite.exceptions import HTTPException
 
+    seen: int | None = None
     for key, value in headers:
         if key != b"content-length":
             continue
@@ -159,9 +160,11 @@ def _reject_oversized_content_length(
             raise HTTPException(400, "Invalid Content-Length") from exc
         if length < 0:
             raise HTTPException(400, "Invalid Content-Length")
-        if length > max_body_size:
-            raise HTTPException(413, "Payload Too Large")
-        return
+        if seen is not None and length != seen:
+            raise HTTPException(400, "Invalid Content-Length")
+        seen = length
+    if seen is not None and seen > max_body_size:
+        raise HTTPException(413, "Payload Too Large")
 
 
 def is_json_content_type(content_type: str | None) -> bool:

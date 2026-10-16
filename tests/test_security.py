@@ -97,6 +97,47 @@ def test_invalid_content_length_returns_400() -> None:
     client.close()
 
 
+def test_conflicting_content_length_headers_return_400() -> None:
+    app = Laminite(max_body_size=100)
+
+    @app.post("/items")
+    async def create(item: Item) -> dict[str, str]:
+        return {"name": item.name}
+
+    async def call() -> int:
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/items",
+            "raw_path": b"/items",
+            "query_string": b"",
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", b"5"),
+                (b"content-length", b"100"),
+            ],
+            "client": ("test", 1),
+            "server": ("test", 80),
+            "state": {},
+        }
+
+        async def receive() -> dict:
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+
+        messages: list[dict] = []
+
+        async def send(message: dict) -> None:
+            messages.append(message)
+
+        await app(scope, receive, send)
+        return next(m["status"] for m in messages if m["type"] == "http.response.start")
+
+    assert asyncio.run(call()) == 400
+
+
 def test_max_query_fields_returns_400() -> None:
     app = Laminite(max_query_fields=3)
 
