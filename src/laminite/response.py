@@ -157,6 +157,36 @@ def _chunk_bytes(chunk: bytes | str) -> bytes:
 async def _close_stream_iterator(
     iterator: Iterable[bytes | str] | AsyncIterable[bytes | str],
 ) -> None:
+    """Close a stream iterator, priming it first so ``finally`` blocks run.
+
+    Unstarted sync/async generators ignore ``close``/``aclose`` without
+    executing their body. Advancing once then closing releases resources
+    without draining an infinite or expensive stream.
+    """
+    anext = getattr(iterator, "__anext__", None)
+    if callable(anext):
+        try:
+            await anext()  # type: ignore[misc]
+        except StopAsyncIteration:
+            return
+        aclose = getattr(iterator, "aclose", None)
+        if callable(aclose):
+            result = aclose()
+            if hasattr(result, "__await__"):
+                await result  # type: ignore[misc]
+        return
+
+    nxt = getattr(iterator, "__next__", None)
+    if callable(nxt):
+        try:
+            nxt()
+        except StopIteration:
+            return
+        close = getattr(iterator, "close", None)
+        if callable(close):
+            close()
+        return
+
     aclose = getattr(iterator, "aclose", None)
     if callable(aclose):
         result = aclose()
@@ -166,18 +196,6 @@ async def _close_stream_iterator(
     close = getattr(iterator, "close", None)
     if callable(close):
         close()
-
-
-async def _drain_stream_iterator(
-    iterator: Iterable[bytes | str] | AsyncIterable[bytes | str],
-) -> None:
-    """Consume the iterator so generator ``finally`` blocks run (e.g. on HEAD)."""
-    if hasattr(iterator, "__aiter__"):
-        async for _ in iterator:  # type: ignore[union-attr]
-            pass
-    else:
-        for _ in iterator:  # type: ignore[union-attr]
-            pass
 
 
 async def send_streaming_response(
@@ -195,10 +213,7 @@ async def send_streaming_response(
     )
     iterator = response.body_iterator
     if is_head:
-        try:
-            await _drain_stream_iterator(iterator)
-        finally:
-            await _close_stream_iterator(iterator)
+        await _close_stream_iterator(iterator)
         await send({"type": "http.response.body", "body": b"", "more_body": False})
         return
 

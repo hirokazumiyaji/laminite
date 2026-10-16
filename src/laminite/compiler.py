@@ -337,7 +337,6 @@ def build_pipeline(
                         await send_streaming_response(send, result, is_head=is_head)
                     except BaseException as exc:
                         stream_error = exc
-                        raise
                     finally:
                         if stack is not None:
                             try:
@@ -347,10 +346,17 @@ def build_pipeline(
                                     stream_error.__traceback__ if stream_error else None,
                                 )
                             except BaseException as cleanup_exc:
-                                if stream_error is not None:
-                                    raise cleanup_exc from stream_error
-                                raise
+                                if stream_error is None or cleanup_exc is not stream_error:
+                                    stream_error = cleanup_exc
                         stack = None
+                    # Response start was already sent; never emit a replacement body.
+                    if stream_error is not None:
+                        if isinstance(stream_error, (asyncio.CancelledError, _Disconnect)):
+                            raise stream_error
+                        logger.exception(
+                            "Streaming response failed after start",
+                            exc_info=stream_error,
+                        )
                     return
 
                 # Render before successful cleanup so encode failures can roll back.

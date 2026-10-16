@@ -144,13 +144,13 @@ def test_async_streaming_skips_empty_chunks() -> None:
     client.close()
 
 
-def test_head_closes_sync_generator() -> None:
+def test_head_closes_async_generator() -> None:
     app = Laminite()
     closed: list[str] = []
 
     @app.get("/stream")
-    def stream() -> StreamingResponse:
-        def gen() -> Iterator[bytes]:
+    async def stream() -> StreamingResponse:
+        async def gen() -> AsyncIterator[bytes]:
             try:
                 yield b"secret"
             finally:
