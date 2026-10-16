@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -10,6 +11,8 @@ from typing import Any
 import msgspec
 
 _STREAM_SENTINEL = object()
+# Shared pool for sync stream next()/close(); keep bounded under concurrency.
+_STREAM_EXECUTOR = ThreadPoolExecutor(max_workers=32, thread_name_prefix="laminite-stream")
 
 CONTENT_TYPE_JSON = (b"content-type", b"application/json")
 CONTENT_TYPE_TEXT = (b"content-type", b"text/plain; charset=utf-8")
@@ -189,21 +192,24 @@ async def send_streaming_response(
     is_head: bool,
 ) -> None:
     content = response.body_iterator
-    executor: ThreadPoolExecutor | None = None
     if hasattr(content, "__aiter__"):
         iterator: Any = aiter(content)  # type: ignore[arg-type]
         is_async = True
     else:
         iterator = _as_sync_iterator(content)  # type: ignore[arg-type]
         is_async = False
-        # One worker so next() and close() never race across threads.
-        executor = ThreadPoolExecutor(max_workers=1)
 
     loop = asyncio.get_running_loop()
+    pending_sync: asyncio.Future[Any] | None = None
 
     async def run_sync(fn: Any, *args: Any) -> Any:
-        assert executor is not None
-        return await loop.run_in_executor(executor, fn, *args)
+        nonlocal pending_sync
+        fut = loop.run_in_executor(_STREAM_EXECUTOR, fn, *args)
+        pending_sync = fut
+        try:
+            return await fut
+        finally:
+            pending_sync = None
 
     try:
         await send(
@@ -234,14 +240,14 @@ async def send_streaming_response(
                     await send({"type": "http.response.body", "body": data, "more_body": True})
         await send({"type": "http.response.body", "body": b"", "more_body": False})
     finally:
-        try:
-            if is_async:
-                await _force_close_async_iterator(iterator)
-            else:
-                await run_sync(_sync_close, iterator)
-        finally:
-            if executor is not None:
-                executor.shutdown(wait=True)
+        if pending_sync is not None:
+            # Finish in-flight next() before close to avoid "generator already executing".
+            with contextlib.suppress(BaseException):
+                await pending_sync
+        if is_async:
+            await _force_close_async_iterator(iterator)
+        else:
+            await loop.run_in_executor(_STREAM_EXECUTOR, _sync_close, iterator)
 
 
 def error_json(detail: Any, status_code: int) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
