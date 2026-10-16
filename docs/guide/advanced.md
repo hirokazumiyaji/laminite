@@ -52,3 +52,25 @@ app = Laminite(title="Demo API", version="1.0.0", openapi_url="/openapi.json")
 ```
 
 `app.openapi()` returns the same document as a dict. Omit `openapi_url` (or set it to `None`) to skip registering the route.
+
+## Observability hooks
+
+Matched routes publish their path template on the ASGI scope as `laminite.route` (also `Request.route`). Middleware that wraps the app can read it after the inner call returns. 404 and 405 leave the key unset.
+
+```python
+@app.get("/items/{item_id}")
+async def read_item(item_id: int, request: Request):
+    assert request.route == "/items/{item_id}"
+```
+
+Pass `on_unhandled_exception=` to observe unexpected errors (no matching exception handler, or a handler that itself fails). `HTTPException` and successfully handled exceptions do not invoke the hook. Sync and async callables are both accepted; hook failures are logged and the client still receives 500.
+
+```python
+def on_exc(request: Request, exc: BaseException) -> None:
+    # e.g. span.record_exception(exc)
+    ...
+
+
+app = Laminite(on_unhandled_exception=on_exc)
+app.add_middleware(OpenTelemetryMiddleware)  # pure ASGI middleware
+```
