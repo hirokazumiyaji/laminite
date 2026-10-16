@@ -198,6 +198,37 @@ class Item(Struct):
     is_offer: bool = False
 
 
+def test_body_shared_with_request() -> None:
+    app = Laminite()
+
+    @app.post("/items")
+    async def create(request: Request, body: Item) -> dict[str, object]:
+        raw = await request.body()
+        return {"name": body.name, "raw_len": len(raw)}
+
+    client = TestClient(app)
+    res = client.post("/items", json={"name": "x", "price": 1.0})
+    assert res.status_code == 200
+    assert res.json()["name"] == "x"
+    assert res.json()["raw_len"] > 0
+    client.close()
+
+
+def test_response_status_overrides_route_status() -> None:
+    """Design 11.3: returning Response ignores the route status_code."""
+    from laminite import JSONResponse
+
+    app = Laminite()
+
+    @app.post("/items", status_code=201)
+    def create() -> JSONResponse:
+        return JSONResponse({"ok": True}, status_code=202)
+
+    client = TestClient(app)
+    assert client.post("/items").status_code == 202
+    client.close()
+
+
 def test_body_decode() -> None:
     app = Laminite()
 

@@ -302,19 +302,21 @@ def build_pipeline(
                 converted = dict(converted_obj)  # type: ignore[arg-type]
                 kwargs.update(converted)
 
-            # Body
+            # Body — always go through the shared cache (and Request when present)
             if body_binding is not None and body_decoder is not None:
-                if shared_body[0] is None:
-                    try:
+                try:
+                    if request is not None:
+                        raw = await request.body()
+                    elif shared_body[0] is not None:
+                        raw = shared_body[0]
+                    else:
                         raw = await _receive_body(receive, max_body_size)
-                    except _Disconnect:
-                        return
-                    except HTTPException as exc:
-                        await _send_http_exception(send, exc, is_head)
-                        return
-                    shared_body[0] = raw
-                else:
-                    raw = shared_body[0]
+                        shared_body[0] = raw
+                except _Disconnect:
+                    return
+                except HTTPException as exc:
+                    await _send_http_exception(send, exc, is_head)
+                    return
                 if not raw and body_binding.has_default:
                     kwargs[body_binding.name] = body_binding.default
                 else:
