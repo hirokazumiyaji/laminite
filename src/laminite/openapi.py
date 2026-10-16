@@ -10,6 +10,7 @@ import msgspec
 from msgspec import Struct
 
 from laminite.compiler import CompiledRoute, RouteInfo
+from laminite.response import Response
 
 _PATH_PARAM_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?::path)?\}")
 _REF_TEMPLATE = "#/components/schemas/{name}"
@@ -73,8 +74,9 @@ def build_openapi(
         return_annotation = hints.get("return", Any)
 
         for method in info.methods:
+            op_path = openapi_path(info.path).replace("/", "_").replace("{", "").replace("}", "")
             operation: dict[str, Any] = {
-                "operationId": f"{info.handler.__name__}_{method.lower()}",
+                "operationId": f"{method.lower()}{op_path}_{info.handler.__name__}",
                 "parameters": [],
                 "responses": {},
             }
@@ -150,8 +152,8 @@ def encode_openapi(doc: dict[str, Any]) -> bytes:
 def make_openapi_handler(body: bytes) -> Callable[..., Any]:
     """Return a sync handler that serves a pre-encoded OpenAPI document."""
 
-    def openapi() -> bytes:
-        return body
+    def openapi() -> Response:
+        return Response(body, media_type="application/json")
 
     openapi.__name__ = "openapi"
     return openapi

@@ -50,7 +50,7 @@ def test_openapi_url_serves_preencoded_schema() -> None:
     client = TestClient(app)
     res = client.get("/openapi.json")
     assert res.status_code == 200
-    assert res.headers["content-type"] == "application/octet-stream" or True
+    assert res.headers["content-type"] == "application/json"
     doc = msgspec.json.decode(res.content)
     assert doc["info"] == {"title": "Demo", "version": "1.2.3"}
     assert doc["openapi"] == "3.1.0"
