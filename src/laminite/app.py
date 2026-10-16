@@ -12,6 +12,7 @@ from laminite.di import DependencyRegistry
 from laminite.exceptions import HTTPException
 from laminite.response import error_json, send_response
 from laminite.router import Match, MethodNotAllowed, NotFound, Router, path_parameter_names
+from laminite.routing import APIRouter
 from laminite.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger("laminite")
@@ -167,6 +168,20 @@ class Laminite:
     def add_middleware(self, cls: Callable[..., ASGIApp], **options: Any) -> None:
         self._ensure_mutable()
         self._middleware.append((cls, options))
+
+    def include_router(self, router: APIRouter, *, prefix: str = "") -> None:
+        """Flatten ``router`` into this app. No per-request mount overhead after freeze."""
+        self._ensure_mutable()
+        if prefix != "" and not prefix.startswith("/"):
+            raise ValueError(f"Prefix must start with '/': {prefix!r}")
+        for info in router.iter_route_infos(prefix=prefix):
+            self._add_route(
+                info.path,
+                info.methods,
+                info.handler,
+                status_code=info.status_code,
+                offload=info.offload,
+            )
 
     def exception_handler(self, exc_type: type[E]) -> Callable[[H], H]:
         def decorator(func: H) -> H:
