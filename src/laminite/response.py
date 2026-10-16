@@ -211,7 +211,7 @@ async def send_streaming_response(
 ) -> None:
     content = response.body_iterator
     if hasattr(content, "__aiter__"):
-        iterator: Any = content
+        iterator: Any = aiter(content)  # type: ignore[arg-type]
         is_async = True
     else:
         iterator = _as_sync_iterator(content)  # type: ignore[arg-type]

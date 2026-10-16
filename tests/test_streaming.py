@@ -156,6 +156,26 @@ def test_list_iterable_streaming() -> None:
     client.close()
 
 
+def test_custom_async_iterable_streaming() -> None:
+    class Chunks:
+        def __aiter__(self) -> AsyncIterator[bytes]:
+            async def gen() -> AsyncIterator[bytes]:
+                yield b"x"
+                yield b"y"
+
+            return gen()
+
+    app = Laminite()
+
+    @app.get("/stream")
+    async def stream() -> StreamingResponse:
+        return StreamingResponse(Chunks())
+
+    client = TestClient(app)
+    assert client.get("/stream").content == b"xy"
+    client.close()
+
+
 def test_head_closes_async_generator() -> None:
     app = Laminite()
     closed: list[str] = []
