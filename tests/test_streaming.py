@@ -144,6 +144,18 @@ def test_async_streaming_skips_empty_chunks() -> None:
     client.close()
 
 
+def test_list_iterable_streaming() -> None:
+    app = Laminite()
+
+    @app.get("/stream")
+    def stream() -> StreamingResponse:
+        return StreamingResponse([b"one", b"two", "three"])
+
+    client = TestClient(app)
+    assert client.get("/stream").content == b"onetwothree"
+    client.close()
+
+
 def test_head_closes_async_generator() -> None:
     app = Laminite()
     closed: list[str] = []

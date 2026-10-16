@@ -157,8 +157,14 @@ def _chunk_bytes(chunk: bytes | str) -> bytes:
     return chunk
 
 
-def _sync_next(iterator: Iterable[bytes | str]) -> object:
+def _sync_next(iterator: Any) -> object:
     return next(iterator, _STREAM_SENTINEL)
+
+
+def _as_sync_iterator(content: Iterable[bytes | str]) -> Any:
+    if hasattr(content, "__next__"):
+        return content
+    return iter(content)
 
 
 async def _force_close_stream_iterator(
@@ -226,20 +232,27 @@ async def send_streaming_response(
             "headers": list(response.raw_headers),
         }
     )
-    iterator = response.body_iterator
+    content = response.body_iterator
+    if hasattr(content, "__aiter__"):
+        iterator: Any = content
+        is_async = True
+    else:
+        iterator = _as_sync_iterator(content)  # type: ignore[arg-type]
+        is_async = False
+
     if is_head:
         await _prime_and_close_stream_iterator(iterator)
         await send({"type": "http.response.body", "body": b"", "more_body": False})
         return
 
     try:
-        if hasattr(iterator, "__aiter__"):
-            async for chunk in iterator:  # type: ignore[union-attr]
+        if is_async:
+            async for chunk in iterator:
                 data = _chunk_bytes(chunk)
                 if data:
                     await send({"type": "http.response.body", "body": data, "more_body": True})
         else:
-            async for chunk in _iter_sync_chunks(iterator):  # type: ignore[arg-type]
+            async for chunk in _iter_sync_chunks(iterator):
                 data = _chunk_bytes(chunk)
                 if data:
                     await send({"type": "http.response.body", "body": data, "more_body": True})
