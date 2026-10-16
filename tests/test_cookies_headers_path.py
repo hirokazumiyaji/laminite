@@ -169,6 +169,20 @@ def test_conflicting_path_param_names() -> None:
         router.add("/files/{other:path}", "POST", "b")
 
 
+def test_path_wildcard_does_not_override_more_specific_route() -> None:
+    from laminite.router import MethodNotAllowed
+
+    router: Router[str] = Router()
+    router.add("/{rest:path}", "GET", "catch")
+    router.add("/fixed/item", "POST", "post")
+
+    assert router.resolve("POST", "/fixed/item").value == "post"
+    with pytest.raises(MethodNotAllowed) as exc_info:
+        router.resolve("GET", "/fixed/item")
+    assert "POST" in exc_info.value.allowed
+    assert router.resolve("GET", "/other/x").value == "catch"
+
+
 def test_set_cookie_options() -> None:
     from datetime import UTC, datetime
 
