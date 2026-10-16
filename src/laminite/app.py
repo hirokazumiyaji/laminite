@@ -7,9 +7,10 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any, TypeVar
 
-from laminite.compiler import RouteInfo, compile_route
+from laminite.compiler import CompiledRoute, RouteInfo, analyze_handler, build_pipeline
 from laminite.di import DependencyRegistry
 from laminite.exceptions import HTTPException
+from laminite.openapi import build_openapi, encode_openapi, make_openapi_handler
 from laminite.response import error_json, send_response
 from laminite.router import Match, MethodNotAllowed, NotFound, Router, path_parameter_names
 from laminite.routing import APIRouter, _validate_prefix
@@ -30,10 +31,16 @@ class Laminite:
         lifespan: Callable[[Laminite], AbstractAsyncContextManager[None]] | None = None,
         max_body_size: int = 1_048_576,
         max_query_fields: int = 1000,
+        title: str = "Laminite",
+        version: str = "0.1.0",
+        openapi_url: str | None = None,
     ) -> None:
         self._lifespan_factory = lifespan
         self._max_body_size = max_body_size
         self._max_query_fields = max_query_fields
+        self.title = title
+        self.version = version
+        self.openapi_url = openapi_url
         self._router: Router[Any] = Router()
         self._routes: list[RouteInfo] = []
         self._registry = DependencyRegistry()
@@ -42,6 +49,7 @@ class Laminite:
         self._frozen = False
         self._lifespan_cm: AbstractAsyncContextManager[None] | None = None
         self._overrides: Mapping[type, Any] | None = None
+        self._openapi: dict[str, Any] | None = None
         self._http: ASGIApp = self._http_before_freeze
 
     def _ensure_mutable(self) -> None:
@@ -201,6 +209,15 @@ class Laminite:
             raise RuntimeError("Application is frozen; cannot set overrides")
         self._overrides = overrides
 
+    def openapi(self) -> dict[str, Any]:
+        """Return the freeze-time OpenAPI 3.1 document (empty paths until freeze)."""
+        if self._openapi is not None:
+            return self._openapi
+        if not self._frozen:
+            self.freeze(overrides=self._overrides)
+        assert self._openapi is not None
+        return self._openapi
+
     def freeze(self, *, overrides: Mapping[type, Any] | None = None) -> None:
         if self._frozen:
             return
@@ -247,19 +264,42 @@ class Laminite:
 
     def _build_http_asgi(self, registry: DependencyRegistry) -> ASGIApp:
         pipelines: dict[int, Any] = {}
+        analyzed: list[tuple[RouteInfo, CompiledRoute]] = []
         router: Router[Any] = Router()
         for info in self._routes:
             key = id(info)
             if key not in pipelines:
-                pipelines[key] = compile_route(
-                    info,
-                    registry,
-                    max_body_size=self._max_body_size,
+                compiled = analyze_handler(info, registry)
+                body_limit = (
+                    info.max_body_size if info.max_body_size is not None else self._max_body_size
+                )
+                pipelines[key] = build_pipeline(
+                    compiled,
+                    max_body_size=body_limit,
                     max_query_fields=self._max_query_fields,
                 )
+                analyzed.append((info, compiled))
             pipeline = pipelines[key]
             for method in info.methods:
                 router.add(info.path, method, pipeline)
+
+        self._openapi = build_openapi(analyzed, title=self.title, version=self.version)
+        if self.openapi_url is not None:
+            body = encode_openapi(self._openapi)
+            openapi_info = RouteInfo(
+                path=self.openapi_url,
+                methods=("GET",),
+                handler=make_openapi_handler(body),
+                status_code=200,
+                offload=False,
+                path_param_names=frozenset(),
+            )
+            openapi_pipeline = build_pipeline(
+                analyze_handler(openapi_info, registry),
+                max_body_size=self._max_body_size,
+                max_query_fields=self._max_query_fields,
+            )
+            router.add(self.openapi_url, "GET", openapi_pipeline)
 
         async def dispatcher(scope: Scope, receive: Receive, send: Send) -> None:
             await self._dispatch(scope, receive, send, router, self._exception_handlers)

@@ -42,3 +42,13 @@ def on_missing(request: Request, exc: UserNotFound) -> JSONResponse:
 ```
 
 Handlers match by MRO. They cover exceptions from handlers and providers, including `HTTPException` raised while reading the request body (for example 413 when `max_body_size` is exceeded).
+
+## OpenAPI
+
+Pass `openapi_url="/openapi.json"` to serve a freeze-time OpenAPI 3.1 document. Generation uses `msgspec.json.schema_components` (no extra dependencies). The JSON is encoded once at freeze; request handling only returns the cached bytes.
+
+```python
+app = Laminite(title="Demo API", version="1.0.0", openapi_url="/openapi.json")
+```
+
+`app.openapi()` returns the same document as a dict. Omit `openapi_url` (or set it to `None`) to skip registering the route.
