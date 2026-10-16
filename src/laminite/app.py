@@ -210,13 +210,18 @@ class Laminite:
         self._overrides = overrides
 
     def openapi(self) -> dict[str, Any]:
-        """Return the freeze-time OpenAPI 3.1 document (empty paths until freeze)."""
+        """Return the OpenAPI 3.1 document for currently registered routes.
+
+        Does not freeze the app. After freeze, returns the cached freeze-time
+        document (identical to the bytes served at ``openapi_url``).
+        """
         if self._openapi is not None:
             return self._openapi
-        if not self._frozen:
-            self.freeze(overrides=self._overrides)
-        assert self._openapi is not None
-        return self._openapi
+        registry = self._registry.with_overrides(self._overrides)
+        analyzed = [
+            (info, analyze_handler(info, registry)) for info in self._routes
+        ]
+        return build_openapi(analyzed, title=self.title, version=self.version)
 
     def freeze(self, *, overrides: Mapping[type, Any] | None = None) -> None:
         if self._frozen:

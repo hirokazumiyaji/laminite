@@ -87,7 +87,8 @@ def build_openapi(
                 location: str | None = None
                 required = False
                 if binding.source == "path":
-                    param_name = binding.alias or binding.name
+                    # Path template names are fixed; ignore Annotated aliases.
+                    param_name = binding.name
                     location = "path"
                     required = True
                 elif binding.source == "query":

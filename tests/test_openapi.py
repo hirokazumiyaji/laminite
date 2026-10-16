@@ -105,3 +105,21 @@ def test_openapi_path_wildcard_normalized() -> None:
     from laminite.openapi import openapi_path
 
     assert openapi_path("/files/{file_path:path}") == "/files/{file_path}"
+
+
+def test_openapi_does_not_freeze_app() -> None:
+    app = Laminite()
+
+    @app.get("/a")
+    def a() -> dict[str, str]:
+        return {"a": "1"}
+
+    doc = app.openapi()
+    assert "/a" in doc["paths"]
+    assert app.frozen is False
+
+    @app.get("/b")
+    def b() -> dict[str, str]:
+        return {"b": "1"}
+
+    assert "/b" in app.openapi()["paths"]
