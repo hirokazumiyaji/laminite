@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Mapping
 from typing import Any
 
@@ -190,22 +191,18 @@ async def _prime_and_close_stream_iterator(
     Used for HEAD, where the body is not sent. Only advances one step so
     infinite streams do not hang.
     """
-    anext = getattr(iterator, "__anext__", None)
-    if callable(anext):
-        try:
-            await anext()  # type: ignore[misc]
-        except StopAsyncIteration:
-            await _force_close_stream_iterator(iterator)
+    try:
+        anext = getattr(iterator, "__anext__", None)
+        if callable(anext):
+            with contextlib.suppress(StopAsyncIteration):
+                await anext()  # type: ignore[misc]
             return
-        await _force_close_stream_iterator(iterator)
-        return
 
-    if hasattr(iterator, "__next__"):
-        await asyncio.to_thread(_sync_next, iterator)  # type: ignore[arg-type]
+        if hasattr(iterator, "__next__"):
+            await asyncio.to_thread(_sync_next, iterator)  # type: ignore[arg-type]
+            return
+    finally:
         await _force_close_stream_iterator(iterator)
-        return
-
-    await _force_close_stream_iterator(iterator)
 
 
 async def _iter_sync_chunks(iterator: Any) -> AsyncIterator[bytes | str]:
