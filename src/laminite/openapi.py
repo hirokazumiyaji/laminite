@@ -131,6 +131,22 @@ def build_openapi(
             ):
                 # Runtime Response media type/body are not known at freeze time.
                 operation["responses"][status] = {"description": "Successful Response"}
+            elif return_annotation is str:
+                operation["responses"][status] = {
+                    "description": "Successful Response",
+                    "content": {
+                        "text/plain": {"schema": {"type": "string"}},
+                    },
+                }
+            elif return_annotation is bytes:
+                operation["responses"][status] = {
+                    "description": "Successful Response",
+                    "content": {
+                        "application/octet-stream": {
+                            "schema": {"type": "string", "format": "binary"},
+                        },
+                    },
+                }
             else:
                 operation["responses"][status] = {
                     "description": "Successful Response",
