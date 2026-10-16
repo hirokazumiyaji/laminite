@@ -2,6 +2,16 @@
 
 Path templates start with `/`. Parameters use `{name}` and must occupy a whole segment. `{name}` must be a valid Python identifier. Partial segments such as `/files/{name}.json` are rejected.
 
+A final segment may be `{name:path}` to capture the remaining path (including `/`):
+
+```python
+@app.get("/files/{file_path:path}")
+async def read_file(file_path: str):
+    return {"file_path": file_path}  # GET /files/a/b/c.txt → "a/b/c.txt"
+```
+
+`{name:path}` anywhere except the last segment raises `ValueError` at registration.
+
 Trailing slashes are significant: `/items` and `/items/` are different paths. Laminite does not redirect.
 
 When a path matches but the method does not, Laminite returns 405 with an `Allow` header. If `GET` is registered, `HEAD` is included in `Allow`.

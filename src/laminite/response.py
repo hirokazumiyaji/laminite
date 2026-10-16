@@ -7,9 +7,11 @@ import contextlib
 import logging
 import re
 import sys
-from collections.abc import AsyncIterable, Callable, Iterable, Mapping
+from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, cast
+from datetime import datetime
+from http.cookies import SimpleCookie
+from typing import Any, Literal, cast
 
 import msgspec
 
@@ -29,6 +31,8 @@ _STREAM_CLOSE_EXECUTOR = ThreadPoolExecutor(
 CONTENT_TYPE_JSON = (b"content-type", b"application/json")
 CONTENT_TYPE_TEXT = (b"content-type", b"text/plain; charset=utf-8")
 CONTENT_TYPE_OCTET = (b"content-type", b"application/octet-stream")
+
+HeadersInput = Mapping[str, str] | Sequence[tuple[str, str]]
 
 # One encoder for every body, so success and error responses encode identically.
 _ENCODER = msgspec.json.Encoder()
@@ -63,13 +67,19 @@ def encode_header_pair(name: str, value: str) -> tuple[bytes, bytes]:
     return name.lower().encode("latin-1"), value.encode("latin-1")
 
 
+def _iter_header_pairs(headers: HeadersInput) -> list[tuple[str, str]]:
+    if isinstance(headers, Mapping):
+        return list(headers.items())
+    return list(headers)
+
+
 def _append_headers(
     raw_headers: list[tuple[bytes, bytes]],
-    headers: Mapping[str, str] | None,
+    headers: HeadersInput | None,
     media_type: str | None,
 ) -> None:
     if headers:
-        for key, value in headers.items():
+        for key, value in _iter_header_pairs(headers):
             raw_headers.append(encode_header_pair(key, value))
     if media_type is not None:
         raw_headers.append(encode_header_pair("content-type", media_type))
@@ -81,7 +91,7 @@ class Response:
         content: bytes | str = b"",
         *,
         status_code: int = 200,
-        headers: Mapping[str, str] | None = None,
+        headers: HeadersInput | None = None,
         media_type: str | None = None,
     ) -> None:
         if isinstance(content, str):
@@ -96,6 +106,64 @@ class Response:
         self.raw_headers: list[tuple[bytes, bytes]] = []
         _append_headers(self.raw_headers, headers, media_type)
 
+    def set_cookie(
+        self,
+        key: str,
+        value: str = "",
+        *,
+        max_age: int | None = None,
+        expires: datetime | str | int | None = None,
+        path: str = "/",
+        domain: str | None = None,
+        secure: bool = False,
+        httponly: bool = False,
+        samesite: Literal["lax", "strict", "none"] | None = "lax",
+    ) -> None:
+        cookie: SimpleCookie = SimpleCookie()
+        cookie[key] = value
+        morsel = cookie[key]
+        if max_age is not None:
+            morsel["max-age"] = max_age
+        if expires is not None:
+            if isinstance(expires, datetime):
+                morsel["expires"] = expires.strftime("%a, %d %b %Y %H:%M:%S GMT")
+            else:
+                morsel["expires"] = expires
+        morsel["path"] = path
+        if domain is not None:
+            morsel["domain"] = domain
+        if secure:
+            morsel["secure"] = True
+        if httponly:
+            morsel["httponly"] = True
+        if samesite is not None:
+            morsel["samesite"] = samesite
+        # SimpleCookie.output() prefixes "Set-Cookie: "; take the value only.
+        output = morsel.OutputString()
+        self.raw_headers.append((b"set-cookie", output.encode("latin-1")))
+
+    def delete_cookie(
+        self,
+        key: str,
+        *,
+        path: str = "/",
+        domain: str | None = None,
+        secure: bool = False,
+        httponly: bool = False,
+        samesite: Literal["lax", "strict", "none"] | None = "lax",
+    ) -> None:
+        self.set_cookie(
+            key,
+            "",
+            max_age=0,
+            expires=0,
+            path=path,
+            domain=domain,
+            secure=secure,
+            httponly=httponly,
+            samesite=samesite,
+        )
+
 
 class JSONResponse(Response):
     def __init__(
@@ -103,7 +171,7 @@ class JSONResponse(Response):
         content: Any,
         *,
         status_code: int = 200,
-        headers: Mapping[str, str] | None = None,
+        headers: HeadersInput | None = None,
     ) -> None:
         body = _ENCODER.encode(content)
         super().__init__(

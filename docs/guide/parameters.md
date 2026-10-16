@@ -4,15 +4,17 @@ Argument sources are decided at freeze time, in this order:
 
 1. Path template name → path
 2. Type is `Request` → request
-3. `Annotated` metadata `Header` / `Query` / `Body` → that source
+3. `Annotated` metadata `Header` / `Cookie` / `Query` / `Body` → that source
 4. Type registered as a dependency → dependency
 5. `msgspec.Struct` subclass → body
 6. Otherwise → query (must be a supported scalar / collection type)
 
+Cookie arguments are validated with the same TypedDict + `msgspec.convert` path as query/header. Routes without Cookie parameters never parse the `Cookie` header.
+
 ```python
 from typing import Annotated
 
-from laminite import Body, Header, Laminite, Query
+from laminite import Body, Cookie, Header, Laminite, Query
 from msgspec import Struct
 
 app = Laminite()
@@ -28,8 +30,15 @@ async def read_item(
     q: str | None = None,
     page_size: Annotated[int, Query(alias="page-size")] = 20,
     request_id: Annotated[str | None, Header()] = None,
+    session_id: Annotated[str | None, Cookie(alias="session_id")] = None,
 ):
-    return {"item_id": item_id, "q": q, "page_size": page_size, "request_id": request_id}
+    return {
+        "item_id": item_id,
+        "q": q,
+        "page_size": page_size,
+        "request_id": request_id,
+        "session_id": session_id,
+    }
 
 
 @app.post("/bulk")
@@ -37,7 +46,7 @@ async def bulk(items: Annotated[list[Item], Body()]):
     return {"count": len(items)}
 ```
 
-Missing or invalid path/query/header values yield 422. Invalid JSON bodies yield 400; schema mismatches yield 422; oversized bodies yield 413. JSON body routes require `Content-Type: application/json` (or `application/*+json`); otherwise 415. Too many query fields yield 400 (`Laminite(max_query_fields=...)`).
+Missing or invalid path/query/header/cookie values yield 422. Invalid JSON bodies yield 400; schema mismatches yield 422; oversized bodies yield 413. JSON body routes require `Content-Type: application/json` (or `application/*+json`); otherwise 415. Too many query fields yield 400 (`Laminite(max_query_fields=...)`).
 
 ## Supported path / query / header types
 

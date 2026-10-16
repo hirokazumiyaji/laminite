@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Mapping, Sequence
+from http.cookies import SimpleCookie
 from typing import Any, TypeVar
 from urllib.parse import parse_qsl
 
@@ -13,13 +14,18 @@ T = TypeVar("T")
 
 
 class Headers(Mapping[str, str]):
-    __slots__ = ("_store",)
+    __slots__ = ("_multi", "_store")
 
     def __init__(self, headers: Sequence[tuple[bytes, bytes]]) -> None:
         store: dict[str, str] = {}
+        multi: dict[str, list[str]] = {}
         for key, value in headers:
-            store[key.decode("latin-1").lower()] = value.decode("latin-1")
+            name = key.decode("latin-1").lower()
+            text = value.decode("latin-1")
+            multi.setdefault(name, []).append(text)
+            store[name] = text
         self._store = store
+        self._multi = multi
 
     def __getitem__(self, key: str) -> str:
         return self._store[key.lower()]
@@ -32,6 +38,9 @@ class Headers(Mapping[str, str]):
 
     def get(self, key: str, default: str | None = None) -> str | None:  # type: ignore[override]
         return self._store.get(key.lower(), default)
+
+    def getlist(self, key: str) -> list[str]:
+        return list(self._multi.get(key.lower(), []))
 
 
 def parse_query_pairs(query_string: bytes, max_num_fields: int | None) -> list[tuple[str, str]]:
@@ -74,6 +83,7 @@ class QueryParams(Mapping[str, str]):
 class Request:
     __slots__ = (
         "_body",
+        "_cookies",
         "_headers",
         "_max_body_size",
         "_max_query_fields",
@@ -97,6 +107,7 @@ class Request:
         self._path_params: Mapping[str, str] = path_params if path_params is not None else {}
         self._headers: Headers | None = None
         self._query_params: QueryParams | None = None
+        self._cookies: dict[str, str] | None = None
         self._body: bytes | None = None
         self._max_body_size = max_body_size
         self._max_query_fields = max_query_fields
@@ -127,6 +138,12 @@ class Request:
                 max_num_fields=self._max_query_fields,
             )
         return self._query_params
+
+    @property
+    def cookies(self) -> dict[str, str]:
+        if self._cookies is None:
+            self._cookies = parse_cookie_header(self.headers.get("cookie"))
+        return self._cookies
 
     @property
     def state(self) -> dict[str, Any]:
@@ -184,6 +201,15 @@ def is_json_content_type(content_type: str | None) -> bool:
         and media.endswith(suffix)
         and len(media) > len(prefix) + len(suffix)
     )
+
+
+def parse_cookie_header(header: str | None) -> dict[str, str]:
+    """Parse a Cookie header into a name→value map (last value wins per name)."""
+    if not header:
+        return {}
+    jar: SimpleCookie = SimpleCookie()
+    jar.load(header)
+    return {key: morsel.value for key, morsel in jar.items()}
 
 
 async def _receive_body(receive: Any, max_body_size: int) -> bytes:

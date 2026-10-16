@@ -13,6 +13,11 @@ class Header:
         self.alias = alias
 
 
+class Cookie:
+    def __init__(self, *, alias: str | None = None) -> None:
+        self.alias = alias
+
+
 class Body:
     def __init__(self) -> None:
         pass
