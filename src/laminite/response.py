@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping
 from typing import Any
 
 import msgspec
+
+_STREAM_SENTINEL = object()
 
 CONTENT_TYPE_JSON = (b"content-type", b"application/json")
 CONTENT_TYPE_TEXT = (b"content-type", b"text/plain; charset=utf-8")
@@ -178,13 +181,12 @@ async def _close_stream_iterator(
 
     nxt = getattr(iterator, "__next__", None)
     if callable(nxt):
-        try:
-            nxt()
-        except StopIteration:
+        chunk = await asyncio.to_thread(next, iterator, _STREAM_SENTINEL)
+        if chunk is _STREAM_SENTINEL:
             return
         close = getattr(iterator, "close", None)
         if callable(close):
-            close()
+            await asyncio.to_thread(close)
         return
 
     aclose = getattr(iterator, "aclose", None)
@@ -195,7 +197,18 @@ async def _close_stream_iterator(
         return
     close = getattr(iterator, "close", None)
     if callable(close):
-        close()
+        await asyncio.to_thread(close)
+
+
+async def _iter_sync_chunks(
+    iterator: Iterable[bytes | str],
+) -> Any:
+    """Yield sync iterator chunks via ``asyncio.to_thread`` to avoid blocking the loop."""
+    while True:
+        chunk = await asyncio.to_thread(next, iterator, _STREAM_SENTINEL)
+        if chunk is _STREAM_SENTINEL:
+            break
+        yield chunk  # type: ignore[misc]
 
 
 async def send_streaming_response(
@@ -224,7 +237,7 @@ async def send_streaming_response(
                 if data:
                     await send({"type": "http.response.body", "body": data, "more_body": True})
         else:
-            for chunk in iterator:  # type: ignore[union-attr]
+            async for chunk in _iter_sync_chunks(iterator):  # type: ignore[arg-type]
                 data = _chunk_bytes(chunk)
                 if data:
                     await send({"type": "http.response.body", "body": data, "more_body": True})
