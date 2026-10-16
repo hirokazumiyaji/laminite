@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Any
 
 import msgspec
@@ -200,16 +199,15 @@ async def send_streaming_response(
         is_async = False
 
     loop = asyncio.get_running_loop()
-    pending_sync: asyncio.Future[Any] | None = None
+    pending_cf: Future[Any] | None = None
 
     async def run_sync(fn: Any, *args: Any) -> Any:
-        nonlocal pending_sync
-        fut = loop.run_in_executor(_STREAM_EXECUTOR, fn, *args)
-        pending_sync = fut
+        nonlocal pending_cf
+        pending_cf = _STREAM_EXECUTOR.submit(fn, *args)
         try:
-            return await fut
+            return await asyncio.wrap_future(pending_cf, loop=loop)
         finally:
-            pending_sync = None
+            pending_cf = None
 
     try:
         await send(
@@ -240,10 +238,10 @@ async def send_streaming_response(
                     await send({"type": "http.response.body", "body": data, "more_body": True})
         await send({"type": "http.response.body", "body": b"", "more_body": False})
     finally:
-        if pending_sync is not None:
-            # Finish in-flight next() before close to avoid "generator already executing".
-            with contextlib.suppress(BaseException):
-                await pending_sync
+        if pending_cf is not None and not pending_cf.done():
+            # Cancellation does not stop the worker; wait synchronously so close
+            # cannot race an in-flight next().
+            wait([pending_cf])
         if is_async:
             await _force_close_async_iterator(iterator)
         else:
