@@ -188,10 +188,11 @@ def _parse_template(
     is_static = True
     raw = path[1:]
     parts = raw.split("/")
-    for part in parts:
+    last_index = len(parts) - 1
+    for index, part in enumerate(parts):
         if part == "":
             # Trailing slash yields a final empty segment; empty in the middle is invalid.
-            if part is not parts[-1] or not path.endswith("/"):
+            if index != last_index or not path.endswith("/"):
                 raise ValueError(f"Invalid path template: {path!r}")
             segments.append(("", False, None))
             continue
