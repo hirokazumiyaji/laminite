@@ -22,6 +22,8 @@ def test_response_rejects_crlf_in_headers() -> None:
         Response(b"ok", headers={"x-\ninject": "v"})
     with pytest.raises(ValueError):
         Response(b"ok", headers={"x-a": "nul\x00byte"})
+    with pytest.raises(ValueError):
+        Response(b"ok", headers={"x-test: injected": "value"})
 
 
 def test_http_exception_rejects_crlf_in_headers() -> None:
@@ -29,6 +31,8 @@ def test_http_exception_rejects_crlf_in_headers() -> None:
         HTTPException(400, headers={"x-a": "one\ntwo"})
     with pytest.raises(ValueError):
         HTTPException(400, headers={"bad\rname": "v"})
+    with pytest.raises(ValueError):
+        HTTPException(400, headers={"not a token": "v"})
 
 
 def test_content_length_over_limit_returns_413_without_receive() -> None:

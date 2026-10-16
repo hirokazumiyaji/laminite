@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import sys
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -32,11 +33,13 @@ CONTENT_TYPE_OCTET = (b"content-type", b"application/octet-stream")
 # One encoder for every body, so success and error responses encode identically.
 _ENCODER = msgspec.json.Encoder()
 
+# RFC 9110 token / field-name; also reject CR/LF/NUL in values.
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _HEADER_FORBIDDEN = frozenset("\r\n\x00")
 
 
 def validate_header_name(name: str) -> None:
-    if not name or _HEADER_FORBIDDEN.intersection(name):
+    if not _HEADER_NAME_RE.fullmatch(name):
         raise ValueError(f"Invalid header name: {name!r}")
 
 
