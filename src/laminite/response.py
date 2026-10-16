@@ -203,11 +203,14 @@ async def send_streaming_response(
 
     async def run_sync(fn: Any, *args: Any) -> Any:
         nonlocal pending_cf
-        pending_cf = _STREAM_EXECUTOR.submit(fn, *args)
+        cf = _STREAM_EXECUTOR.submit(fn, *args)
+        pending_cf = cf
         try:
-            return await asyncio.wrap_future(pending_cf, loop=loop)
+            return await asyncio.wrap_future(cf, loop=loop)
         finally:
-            pending_cf = None
+            # Keep pending_cf if cancelled while the worker is still running.
+            if cf.done():
+                pending_cf = None
 
     try:
         await send(
