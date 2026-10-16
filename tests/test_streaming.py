@@ -176,6 +176,32 @@ def test_custom_async_iterable_streaming() -> None:
     client.close()
 
 
+def test_streaming_iterator_error_is_swallowed_after_start() -> None:
+    app = Laminite()
+
+    @app.get("/stream")
+    def stream() -> StreamingResponse:
+        def gen() -> Iterator[bytes]:
+            yield b"a"
+            raise RuntimeError("boom")
+
+        return StreamingResponse(gen())
+
+    client = TestClient(app)
+    # Start already sent; pipeline logs and returns without a replacement body.
+    res = client.get("/stream")
+    assert res.content == b"a"
+    client.close()
+
+
+def test_response_bytes_content_without_media_type() -> None:
+    from laminite.response import Response
+
+    resp = Response(b"raw")
+    assert resp.body == b"raw"
+    assert resp.media_type is None
+
+
 def test_head_closes_async_iterator_without_advancing() -> None:
     closed: list[str] = []
     advanced: list[str] = []
