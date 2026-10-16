@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Mapping
 from typing import Any
 
@@ -192,17 +191,6 @@ async def _iter_sync_chunks(iterator: Any) -> AsyncIterator[bytes | str]:
         yield chunk  # type: ignore[misc]
 
 
-async def _prime_stream_iterator(iterator: Any) -> None:
-    """Advance once so later ``close``/``aclose`` runs generator finally blocks."""
-    anext = getattr(iterator, "__anext__", None)
-    if callable(anext):
-        with contextlib.suppress(StopAsyncIteration):
-            await anext()  # type: ignore[misc]
-        return
-    if hasattr(iterator, "__next__"):
-        await asyncio.to_thread(_sync_next, iterator)
-
-
 async def send_streaming_response(
     send: Any,
     response: StreamingResponse,
@@ -227,8 +215,7 @@ async def send_streaming_response(
         )
 
         if is_head:
-            # Prime only after start succeeds so a failed start does not advance.
-            await _prime_stream_iterator(iterator)
+            # Do not advance the iterator; just close and send an empty body.
             await send({"type": "http.response.body", "body": b"", "more_body": False})
             return
 

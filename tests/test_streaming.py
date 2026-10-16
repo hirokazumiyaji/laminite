@@ -176,21 +176,29 @@ def test_custom_async_iterable_streaming() -> None:
     client.close()
 
 
-def test_head_closes_async_generator() -> None:
-    app = Laminite()
+def test_head_closes_async_iterator_without_advancing() -> None:
     closed: list[str] = []
+    advanced: list[str] = []
+
+    class Tracked:
+        def __aiter__(self) -> AsyncIterator[bytes]:
+            return self
+
+        async def __anext__(self) -> bytes:
+            advanced.append("next")
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            closed.append("closed")
+
+    app = Laminite()
 
     @app.get("/stream")
     async def stream() -> StreamingResponse:
-        async def gen() -> AsyncIterator[bytes]:
-            try:
-                yield b"secret"
-            finally:
-                closed.append("closed")
-
-        return StreamingResponse(gen())
+        return StreamingResponse(Tracked())
 
     client = TestClient(app)
     assert client.head("/stream").content == b""
+    assert advanced == []
     assert closed == ["closed"]
     client.close()
