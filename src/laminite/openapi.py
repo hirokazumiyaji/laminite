@@ -124,8 +124,9 @@ def build_openapi(
                 )
 
             status = _response_status(info, return_annotation)
-            if status == "204":
-                operation["responses"][status] = {"description": "No Content"}
+            if return_annotation is type(None) or return_annotation is None:
+                description = "No Content" if status == "204" else "Successful Response"
+                operation["responses"][status] = {"description": description}
             elif isinstance(return_annotation, type) and issubclass(
                 return_annotation, (Response, JSONResponse)
             ):
