@@ -46,6 +46,10 @@ def validate_header_name(name: str) -> None:
 def validate_header_value(value: str) -> None:
     if _HEADER_FORBIDDEN.intersection(value):
         raise ValueError(f"Invalid header value: {value!r}")
+    try:
+        value.encode("latin-1")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"Invalid header value: {value!r}") from exc
 
 
 def encode_header_pair(name: str, value: str) -> tuple[bytes, bytes]:
@@ -63,8 +67,7 @@ def _append_headers(
         for key, value in headers.items():
             raw_headers.append(encode_header_pair(key, value))
     if media_type is not None:
-        validate_header_value(media_type)
-        raw_headers.append((b"content-type", media_type.encode("latin-1")))
+        raw_headers.append(encode_header_pair("content-type", media_type))
 
 
 class Response:

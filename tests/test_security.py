@@ -24,6 +24,10 @@ def test_response_rejects_crlf_in_headers() -> None:
         Response(b"ok", headers={"x-a": "nul\x00byte"})
     with pytest.raises(ValueError):
         Response(b"ok", headers={"x-test: injected": "value"})
+    with pytest.raises(ValueError):
+        Response(b"ok", media_type="text/plain\r\nX-Injected: yes")
+    with pytest.raises(ValueError):
+        Response(b"ok", media_type="text/plain; charset=utf-8\u2603")
 
 
 def test_http_exception_rejects_crlf_in_headers() -> None:
