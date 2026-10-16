@@ -134,6 +134,11 @@ class Laminite:
         return self._frozen
 
     def set_overrides(self, overrides: Mapping[type, Any] | None) -> None:
+        """Store overrides applied on the next freeze (pre-freeze only).
+
+        Prefer ``TestClient(..., overrides=...)`` / ``http_with_overrides`` so a
+        frozen app is never mutated and overrides do not leak across tests.
+        """
         if self._frozen:
             raise RuntimeError("Application is frozen; cannot set overrides")
         self._overrides = overrides
@@ -143,43 +148,71 @@ class Laminite:
             return
         if overrides is not None:
             self._overrides = overrides
-        # Replace the registry so compilation and any later lookups share overrides.
-        self._registry = self._registry.with_overrides(self._overrides)
+        # Freeze always compiles against the base registry. Per-request/test
+        # overrides use http_with_overrides so they never rewrite app state.
+        self._http = self._build_http_asgi(self._registry)
+        self._frozen = True
+
+    def http_with_overrides(self, overrides: Mapping[type, Any]) -> ASGIApp:
+        """Return an HTTP ASGI app with dependency overrides; does not mutate this app."""
+        if not self._frozen:
+            self.freeze()
+        return self._build_http_asgi(self._registry.with_overrides(overrides))
+
+    def _build_http_asgi(self, registry: DependencyRegistry) -> ASGIApp:
         pipelines: dict[int, Any] = {}
-        new_router: Router[Any] = Router()
+        router: Router[Any] = Router()
         for info in self._routes:
             key = id(info)
             if key not in pipelines:
                 pipelines[key] = compile_route(
                     info,
-                    self._registry,
+                    registry,
                     max_body_size=self._max_body_size,
                 )
             pipeline = pipelines[key]
             for method in info.methods:
-                new_router.add(info.path, method, pipeline)
-        self._router = new_router
+                router.add(info.path, method, pipeline)
+
+        # Keep the frozen app's router in sync when compiling the primary ASGI app.
+        if registry is self._registry:
+            self._router = router
+
+        exception_handlers = self._exception_handlers
 
         async def dispatcher(scope: dict[str, Any], receive: Any, send: Any) -> None:
-            await self._dispatch(scope, receive, send)
+            await self._dispatch(
+                scope, receive, send, router=router, exception_handlers=exception_handlers
+            )
 
         app: ASGIApp = dispatcher
         for cls, options in reversed(self._middleware):
             app = cls(app, **options)
-        self._http = app
-        self._frozen = True
+        return app
 
     async def _http_before_freeze(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        self.freeze(overrides=self._overrides)
+        self.freeze()
         await self._http(scope, receive, send)
 
-    async def _dispatch(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+    async def _dispatch(
+        self,
+        scope: dict[str, Any],
+        receive: Any,
+        send: Any,
+        *,
+        router: Router[Any] | None = None,
+        exception_handlers: Mapping[type, Callable[..., Any]] | None = None,
+    ) -> None:
         if "state" not in scope:
             scope["state"] = {}
         method = scope["method"]
         path = scope["path"]
+        active_router = router if router is not None else self._router
+        handlers = (
+            exception_handlers if exception_handlers is not None else self._exception_handlers
+        )
         try:
-            match: Match[Any] = self._router.resolve(method, path)
+            match: Match[Any] = active_router.resolve(method, path)
         except NotFound:
             status, headers, body = error_json("Not Found", 404)
             await send_response(
@@ -202,7 +235,7 @@ class Laminite:
             send,
             path_params=match.path_params,
             is_head=match.is_head or method == "HEAD",
-            exception_handlers=self._exception_handlers,
+            exception_handlers=handlers,
         )
 
     async def _lifespan(self, receive: Any, send: Any) -> None:
@@ -213,7 +246,7 @@ class Laminite:
                     if self._lifespan_factory is not None:
                         self._lifespan_cm = self._lifespan_factory(self)
                         await self._lifespan_cm.__aenter__()
-                    self.freeze(overrides=self._overrides)
+                    self.freeze()
                 except Exception as exc:
                     if self._lifespan_cm is not None:
                         try:

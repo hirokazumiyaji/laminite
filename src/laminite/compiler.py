@@ -287,11 +287,9 @@ def build_pipeline(
 
             if body_binding is not None and body_decoder is not None:
                 assert request is not None
-                try:
-                    raw = await request.body()
-                except HTTPException as exc:
-                    await _send_http_exception(send, exc, is_head)
-                    return
+                # Let HTTPException (e.g. 413) reach the outer handler path so
+                # @app.exception_handler(HTTPException) applies consistently.
+                raw = await request.body()
                 if not raw and body_binding.has_default:
                     kwargs[body_binding.name] = body_binding.default
                 else:

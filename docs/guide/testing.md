@@ -12,3 +12,5 @@ with TestClient(app) as client:
 `TestClient` uses a single `asyncio.Runner` for its lifetime so lifespan resources stay on one event loop. It has no httpx (or other HTTP client) dependency.
 
 Without a `with` block, lifespan is skipped and the app freezes on the first request.
+
+`TestClient(app, overrides={T: fake})` works on an already-frozen shared `app` and does not mutate it: later clients without overrides still see the original dependencies.

@@ -46,6 +46,7 @@ class TestClient:
         self._receive_q: asyncio.Queue[dict[str, Any]] | None = None
         self._send_q: asyncio.Queue[dict[str, Any]] | None = None
         self._entered = False
+        self._http_app: Any | None = None
 
     def __enter__(self) -> TestClient:
         self._entered = True
@@ -64,8 +65,7 @@ class TestClient:
             async def send(message: dict[str, Any]) -> None:
                 await send_q.put(message)
 
-            if self.overrides is not None and not self.app.frozen:
-                self.app.set_overrides(self.overrides)
+            # Lifespan freezes the shared app without baking overrides into it.
             await self.app({"type": "lifespan"}, receive, send)
 
         self._lifespan_task = self._runner.get_loop().create_task(lifespan_call())
@@ -97,6 +97,15 @@ class TestClient:
         if not self._entered:
             self._runner.close()
 
+    def _resolve_http_app(self) -> Any:
+        if self._http_app is not None:
+            return self._http_app
+        if self.overrides is None:
+            self._http_app = self.app
+        else:
+            self._http_app = self.app.http_with_overrides(self.overrides)
+        return self._http_app
+
     def request(
         self,
         method: str,
@@ -107,8 +116,6 @@ class TestClient:
         json: Any = None,
         content: bytes | None = None,
     ) -> TestResponse:
-        if self.overrides is not None and not self.app.frozen:
-            self.app.set_overrides(self.overrides)
         return self._runner.run(
             self._request_async(
                 method, path, query=query, headers=headers, json=json, content=content
@@ -178,7 +185,7 @@ class TestClient:
         async def send(message: dict[str, Any]) -> None:
             messages.append(message)
 
-        await self.app(scope, receive, send)
+        await self._resolve_http_app()(scope, receive, send)
 
         status = 500
         resp_headers: dict[str, str] = {}
