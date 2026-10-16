@@ -15,18 +15,22 @@ from msgspec import Struct
 
 app = laminite.Laminite()
 
+
 class Item(Struct):
     name: str
     price: float
     is_offer: bool = False
 
+
 @app.get("/")
 def read_root():
     return {"message": "Hello from Laminite"}
 
+
 @app.get("/items/{item_id}")
 async def read_item(item_id: int, q: str | None = None):
     return {"item_id": item_id, "q": q}
+
 
 @app.post("/items", status_code=201)
 async def create_item(body: Item):
@@ -187,7 +191,14 @@ class Laminite:
     ) -> None: ...
 
     # ルート登録（デコレータは元の関数をそのまま返す）
-    def route(self, path: str, methods: Sequence[str], *, status_code: int | None = None, offload: bool = False): ...
+    def route(
+        self,
+        path: str,
+        methods: Sequence[str],
+        *,
+        status_code: int | None = None,
+        offload: bool = False,
+    ): ...
     def get(self, path: str, *, status_code: int | None = None, offload: bool = False): ...
     def post(self, path: str, *, status_code: int | None = None, offload: bool = False): ...
     def put(self, path: str, *, status_code: int | None = None, offload: bool = False): ...
@@ -222,8 +233,10 @@ async 関数に `offload=True` を指定した場合は、登録時に `TypeErro
 class Query:
     def __init__(self, *, alias: str | None = None) -> None: ...
 
+
 class Header:
     def __init__(self, *, alias: str | None = None) -> None: ...
+
 
 class Body:
     def __init__(self) -> None: ...
@@ -238,6 +251,7 @@ async def search(
     page_size: Annotated[int, Query(alias="page-size")] = 20,
     request_id: Annotated[str | None, Header()] = None,
 ): ...
+
 
 @app.post("/bulk")
 async def bulk(items: Annotated[list[Item], Body()]): ...
@@ -415,20 +429,23 @@ async def lifespan(app: laminite.Laminite):
     yield
     await pool.close()
 
+
 app = laminite.Laminite(lifespan=lifespan)
+
 
 @app.provider
 async def connection(pool: asyncpg.Pool) -> AsyncIterator[asyncpg.Connection]:
     async with pool.acquire() as conn:
         yield conn
 
+
 @app.provider
 def current_user(request: laminite.Request) -> User:
     return authenticate(request.headers.get("authorization"))
 
+
 @app.get("/me/orders")
-async def my_orders(user: User, conn: asyncpg.Connection) -> list[Order]:
-    ...
+async def my_orders(user: User, conn: asyncpg.Connection) -> list[Order]: ...
 ```
 
 ### 10.3 provider の形式
@@ -505,9 +522,9 @@ class Request:
     method: str
     path: str
     path_params: dict[str, str]
-    headers: Headers          # 小文字のヘッダー名で引ける読み取り専用の対応表
-    query_params: QueryParams # 同じキーの複数の値を保持する読み取り専用の対応表
-    state: dict[str, Any]     # scope["state"] を指す。ミドルウェアからハンドラへ値を渡すのに使う
+    headers: Headers  # 小文字のヘッダー名で引ける読み取り専用の対応表
+    query_params: QueryParams  # 同じキーの複数の値を保持する読み取り専用の対応表
+    state: dict[str, Any]  # scope["state"] を指す。ミドルウェアからハンドラへ値を渡すのに使う
 
     async def body(self) -> bytes: ...
     async def json(self, tp: type[T] = Any) -> T: ...
@@ -546,6 +563,7 @@ class Response:
         headers: Mapping[str, str] | None = None,
         media_type: str | None = None,
     ) -> None: ...
+
 
 class JSONResponse(Response):
     def __init__(
@@ -656,8 +674,8 @@ class Timing:
         self.app = app
         self.header = header.encode()
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        ...
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None: ...
+
 
 app.add_middleware(Timing, header="x-response-time")
 ```
@@ -684,6 +702,7 @@ async def __call__(self, scope, receive, send):
 
 ```python
 from laminite.testing import TestClient
+
 
 def test_read_item():
     with TestClient(app, overrides={asyncpg.Pool: FakePool()}) as client:
@@ -716,12 +735,15 @@ class TestClient:
         content: bytes | None = None,
     ) -> TestResponse: ...
     def get(self, path: str, **kwargs) -> TestResponse: ...
+
     # post, put, patch, delete, head も同様
+
 
 class TestResponse:
     status_code: int
     headers: dict[str, str]
     content: bytes
+
     @property
     def text(self) -> str: ...
     def json(self, tp: type[T] = Any) -> T: ...
