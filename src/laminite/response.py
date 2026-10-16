@@ -157,38 +157,14 @@ def _chunk_bytes(chunk: bytes | str) -> bytes:
     return chunk
 
 
-async def _close_stream_iterator(
+def _sync_next(iterator: Iterable[bytes | str]) -> object:
+    return next(iterator, _STREAM_SENTINEL)
+
+
+async def _force_close_stream_iterator(
     iterator: Iterable[bytes | str] | AsyncIterable[bytes | str],
 ) -> None:
-    """Close a stream iterator, priming it first so ``finally`` blocks run.
-
-    Unstarted sync/async generators ignore ``close``/``aclose`` without
-    executing their body. Advancing once then closing releases resources
-    without draining an infinite or expensive stream.
-    """
-    anext = getattr(iterator, "__anext__", None)
-    if callable(anext):
-        try:
-            await anext()  # type: ignore[misc]
-        except StopAsyncIteration:
-            return
-        aclose = getattr(iterator, "aclose", None)
-        if callable(aclose):
-            result = aclose()
-            if hasattr(result, "__await__"):
-                await result  # type: ignore[misc]
-        return
-
-    nxt = getattr(iterator, "__next__", None)
-    if callable(nxt):
-        chunk = await asyncio.to_thread(next, iterator, _STREAM_SENTINEL)
-        if chunk is _STREAM_SENTINEL:
-            return
-        close = getattr(iterator, "close", None)
-        if callable(close):
-            await asyncio.to_thread(close)
-        return
-
+    """Call ``aclose``/``close`` without advancing (safe during concurrent next())."""
     aclose = getattr(iterator, "aclose", None)
     if callable(aclose):
         result = aclose()
@@ -200,12 +176,38 @@ async def _close_stream_iterator(
         await asyncio.to_thread(close)
 
 
+async def _prime_and_close_stream_iterator(
+    iterator: Iterable[bytes | str] | AsyncIterable[bytes | str],
+) -> None:
+    """Prime then close so unstarted generator ``finally`` blocks still run.
+
+    Used for HEAD, where the body is not sent. Only advances one step so
+    infinite streams do not hang.
+    """
+    anext = getattr(iterator, "__anext__", None)
+    if callable(anext):
+        try:
+            await anext()  # type: ignore[misc]
+        except StopAsyncIteration:
+            await _force_close_stream_iterator(iterator)
+            return
+        await _force_close_stream_iterator(iterator)
+        return
+
+    if hasattr(iterator, "__next__"):
+        await asyncio.to_thread(_sync_next, iterator)  # type: ignore[arg-type]
+        await _force_close_stream_iterator(iterator)
+        return
+
+    await _force_close_stream_iterator(iterator)
+
+
 async def _iter_sync_chunks(
     iterator: Iterable[bytes | str],
 ) -> Any:
     """Yield sync iterator chunks via ``asyncio.to_thread`` to avoid blocking the loop."""
     while True:
-        chunk = await asyncio.to_thread(next, iterator, _STREAM_SENTINEL)
+        chunk = await asyncio.to_thread(_sync_next, iterator)
         if chunk is _STREAM_SENTINEL:
             break
         yield chunk  # type: ignore[misc]
@@ -226,7 +228,7 @@ async def send_streaming_response(
     )
     iterator = response.body_iterator
     if is_head:
-        await _close_stream_iterator(iterator)
+        await _prime_and_close_stream_iterator(iterator)
         await send({"type": "http.response.body", "body": b"", "more_body": False})
         return
 
@@ -243,7 +245,8 @@ async def send_streaming_response(
                     await send({"type": "http.response.body", "body": data, "more_body": True})
         await send({"type": "http.response.body", "body": b"", "more_body": False})
     except BaseException:
-        await _close_stream_iterator(iterator)
+        # Do not prime here: a sync next() may still be running in a worker thread.
+        await _force_close_stream_iterator(iterator)
         raise
 
 
