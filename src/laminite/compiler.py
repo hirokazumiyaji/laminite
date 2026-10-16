@@ -8,10 +8,14 @@ import logging
 from collections.abc import Callable, Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
+from datetime import date, datetime, time
+from decimal import Decimal
+from enum import Enum
 from types import UnionType
 from typing import (
     Annotated,
     Any,
+    Literal,
     NotRequired,
     Required,
     TypedDict,
@@ -21,15 +25,26 @@ from typing import (
     get_type_hints,
 )
 from urllib.parse import parse_qsl
+from uuid import UUID
 
 import msgspec
 from msgspec import Struct
 
-from laminite.di import DependencyRegistry, ProviderSpec, run_providers, strip_annotated
+from laminite.di import (
+    DependencyRegistry,
+    ProviderSpec,
+    run_providers,
+    strip_annotated,
+    strip_param_markers,
+)
 from laminite.exceptions import HTTPException
 from laminite.params import Body, Header, Query
 from laminite.request import Request, _Disconnect
 from laminite.response import error_json, render_result, send_response
+
+_QUERY_SCALARS: frozenset[type] = frozenset(
+    {str, int, float, bool, bytes, UUID, datetime, date, time, Decimal}
+)
 
 logger = logging.getLogger("laminite")
 
@@ -115,13 +130,14 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
         source, alias, dep_type = _resolve_source(name, annotation, info.path_param_names, registry)
         if source == "path":
             covered_path.add(name)
-            if _is_list_type(annotation):
+            if _is_list_type(strip_annotated(annotation)):
                 raise TypeError(f"Path parameter {name!r} cannot be a list type")
         if source == "body":
             body_count += 1
 
-        stripped = strip_annotated(annotation)
-        is_list = source == "query" and _is_list_type(stripped)
+        # Keep msgspec.Meta (and other non-marker metadata) for TypedDict / Decoder.
+        stripped = strip_param_markers(annotation)
+        is_list = source == "query" and _is_list_type(strip_annotated(annotation))
         header_key: bytes | None = None
         if source == "header":
             header_name = alias if alias is not None else name.replace("_", "-")
@@ -441,14 +457,16 @@ def _resolve_source(
         return "request", None, None
     if marker_source is not None:
         return marker_source, alias, None
-    if isinstance(raw, type) and registry.has(raw):
-        return "dependency", None, raw
-    if isinstance(raw, type) and issubclass(raw, Struct):
+
+    # Unwrap Optional so User | None and Item | None resolve like the bare type.
+    core = _unwrap_optional(raw)
+    if isinstance(core, type) and registry.has(core):
+        return "dependency", None, core
+    if isinstance(core, type) and issubclass(core, Struct):
         return "body", None, None
-    if isinstance(raw, type) and not _is_query_compatible(raw):
-        # User-defined class that is not a registered dependency.
-        raise ValueError(f"Unregistered dependency: {raw!r}")
-    return "query", alias, None
+    if _is_query_compatible(raw):
+        return "query", alias, None
+    raise ValueError(f"Unregistered dependency: {_unregistered_type(raw)!r}")
 
 
 def _is_list_type(annotation: Any) -> bool:
@@ -465,14 +483,46 @@ def _unwrap_optional(annotation: Any) -> Any:
     return annotation
 
 
+def _newtype_supertype(annotation: Any) -> Any | None:
+    # typing.NewType instances expose __supertype__ (Python 3.10+).
+    return getattr(annotation, "__supertype__", None)
+
+
 def _is_query_compatible(annotation: Any) -> bool:
     annotation = _unwrap_optional(annotation)
-    if annotation in (str, int, float, bool, bytes):
+    super_tp = _newtype_supertype(annotation)
+    if super_tp is not None:
+        return _is_query_compatible(super_tp)
+    if annotation in _QUERY_SCALARS:
+        return True
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
         return True
     origin = get_origin(annotation)
+    if origin is Literal:
+        return True
     if origin is list:
         args = get_args(annotation)
         return bool(args) and _is_query_compatible(args[0])
     if origin is Union or origin is UnionType:
         return all(_is_query_compatible(a) for a in get_args(annotation) if a is not type(None))
     return False
+
+
+def _unregistered_type(annotation: Any) -> Any:
+    """Pick a representative type for Unregistered dependency errors."""
+    annotation = _unwrap_optional(annotation)
+    super_tp = _newtype_supertype(annotation)
+    if super_tp is not None:
+        return annotation
+    origin = get_origin(annotation)
+    if origin is list:
+        args = get_args(annotation)
+        if args:
+            return _unregistered_type(args[0])
+    if origin is Union or origin is UnionType:
+        for arg in get_args(annotation):
+            if arg is type(None):
+                continue
+            if not _is_query_compatible(arg):
+                return _unregistered_type(arg)
+    return annotation

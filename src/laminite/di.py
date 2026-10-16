@@ -8,6 +8,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager, context
 from dataclasses import dataclass
 from typing import Annotated, Any, TypeVar, get_args, get_origin, get_type_hints
 
+from laminite.params import Body, Header, Query
 from laminite.request import Request
 
 T = TypeVar("T")
@@ -141,6 +142,18 @@ def strip_annotated(ann: Any) -> Any:
     if get_origin(ann) is Annotated:
         return get_args(ann)[0]
     return ann
+
+
+def strip_param_markers(ann: Any) -> Any:
+    """Remove Laminite Query/Header/Body markers; keep msgspec.Meta and other metadata."""
+    if get_origin(ann) is not Annotated:
+        return ann
+    args = get_args(ann)
+    base = args[0]
+    kept = tuple(m for m in args[1:] if not isinstance(m, (Query, Header, Body)))
+    if not kept:
+        return base
+    return Annotated[base, *kept]
 
 
 def _unwrap_iterator_type(ret: Any) -> type:
