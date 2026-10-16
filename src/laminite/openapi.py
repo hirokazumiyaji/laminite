@@ -82,16 +82,29 @@ def build_openapi(
             }
 
             seen_params: set[tuple[str, str]] = set()
+            path_bindings = {
+                b.name: b for b in compiled.bindings if b.source == "path"
+            }
+            # Always emit path params from the template so names match the path.
+            for path_name in sorted(info.path_param_names):
+                binding = path_bindings.get(path_name)
+                annotation = binding.annotation if binding is not None else str
+                key = (path_name, "path")
+                seen_params.add(key)
+                operation["parameters"].append(
+                    {
+                        "name": path_name,
+                        "in": "path",
+                        "required": True,
+                        "schema": _annotation_schema(annotation, components),
+                    }
+                )
+
             for binding in compiled.bindings:
                 param_name: str | None = None
                 location: str | None = None
                 required = False
-                if binding.source == "path":
-                    # Path template names are fixed; ignore Annotated aliases.
-                    param_name = binding.name
-                    location = "path"
-                    required = True
-                elif binding.source == "query":
+                if binding.source == "query":
                     param_name = binding.alias or binding.name
                     location = "query"
                     required = not binding.has_default
