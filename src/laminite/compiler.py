@@ -29,7 +29,13 @@ from laminite.di import DependencyRegistry, ProviderSpec, run_providers, strip_a
 from laminite.exceptions import HTTPException
 from laminite.params import Body, Header, Query
 from laminite.request import Request, _Disconnect
-from laminite.response import error_json, render_result, send_response
+from laminite.response import (
+    StreamingResponse,
+    error_json,
+    render_result,
+    send_response,
+    send_streaming_response,
+)
 
 logger = logging.getLogger("laminite")
 
@@ -324,6 +330,28 @@ def build_pipeline(
                     result = await handler(**kwargs)
                 else:
                     result = handler(**kwargs)
+
+                if isinstance(result, StreamingResponse):
+                    stream_error: BaseException | None = None
+                    try:
+                        await send_streaming_response(send, result, is_head=is_head)
+                    except BaseException as exc:
+                        stream_error = exc
+                        raise
+                    finally:
+                        if stack is not None:
+                            try:
+                                await stack.__aexit__(
+                                    type(stream_error) if stream_error else None,
+                                    stream_error,
+                                    stream_error.__traceback__ if stream_error else None,
+                                )
+                            except BaseException as cleanup_exc:
+                                if stream_error is not None:
+                                    raise cleanup_exc from stream_error
+                                raise
+                        stack = None
+                    return
 
                 # Render before successful cleanup so encode failures can roll back.
                 status_out, headers, body = render_result(

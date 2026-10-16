@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterable, Callable, Iterable, Mapping
 from typing import Any
 
 import msgspec
@@ -13,6 +13,18 @@ CONTENT_TYPE_OCTET = (b"content-type", b"application/octet-stream")
 
 # One encoder for every body, so success and error responses encode identically.
 _ENCODER = msgspec.json.Encoder()
+
+
+def _append_headers(
+    raw_headers: list[tuple[bytes, bytes]],
+    headers: Mapping[str, str] | None,
+    media_type: str | None,
+) -> None:
+    if headers:
+        for key, value in headers.items():
+            raw_headers.append((key.lower().encode("latin-1"), value.encode("latin-1")))
+    if media_type is not None:
+        raw_headers.append((b"content-type", media_type.encode("latin-1")))
 
 
 class Response:
@@ -34,11 +46,7 @@ class Response:
         self.status_code = status_code
         self.media_type = media_type
         self.raw_headers: list[tuple[bytes, bytes]] = []
-        if headers:
-            for key, value in headers.items():
-                self.raw_headers.append((key.lower().encode("latin-1"), value.encode("latin-1")))
-        if media_type is not None:
-            self.raw_headers.append((b"content-type", media_type.encode("latin-1")))
+        _append_headers(self.raw_headers, headers, media_type)
 
 
 class JSONResponse(Response):
@@ -56,6 +64,24 @@ class JSONResponse(Response):
             headers=headers,
             media_type="application/json",
         )
+
+
+class StreamingResponse:
+    """Chunked ASGI response from a sync or async iterator. No Content-Length."""
+
+    def __init__(
+        self,
+        content: Iterable[bytes | str] | AsyncIterable[bytes | str],
+        *,
+        status_code: int = 200,
+        headers: Mapping[str, str] | None = None,
+        media_type: str | None = None,
+    ) -> None:
+        self.body_iterator = content
+        self.status_code = status_code
+        self.media_type = media_type
+        self.raw_headers: list[tuple[bytes, bytes]] = []
+        _append_headers(self.raw_headers, headers, media_type)
 
 
 def render_result(
@@ -120,6 +146,43 @@ async def send_response(
             "body": b"" if is_head else body,
         }
     )
+
+
+def _chunk_bytes(chunk: bytes | str) -> bytes:
+    if isinstance(chunk, str):
+        return chunk.encode("utf-8")
+    return chunk
+
+
+async def send_streaming_response(
+    send: Any,
+    response: StreamingResponse,
+    *,
+    is_head: bool,
+) -> None:
+    await send(
+        {
+            "type": "http.response.start",
+            "status": response.status_code,
+            "headers": list(response.raw_headers),
+        }
+    )
+    if is_head:
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+        return
+
+    iterator = response.body_iterator
+    if hasattr(iterator, "__aiter__"):
+        async for chunk in iterator:  # type: ignore[union-attr]
+            data = _chunk_bytes(chunk)
+            if data:
+                await send({"type": "http.response.body", "body": data, "more_body": True})
+    else:
+        for chunk in iterator:  # type: ignore[union-attr]
+            data = _chunk_bytes(chunk)
+            if data:
+                await send({"type": "http.response.body", "body": data, "more_body": True})
+    await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 
 def error_json(detail: Any, status_code: int) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
