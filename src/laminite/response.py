@@ -183,28 +183,6 @@ async def _force_close_stream_iterator(
         await asyncio.to_thread(close)
 
 
-async def _prime_and_close_stream_iterator(
-    iterator: Iterable[bytes | str] | AsyncIterable[bytes | str],
-) -> None:
-    """Prime then close so unstarted generator ``finally`` blocks still run.
-
-    Used for HEAD, where the body is not sent. Only advances one step so
-    infinite streams do not hang.
-    """
-    try:
-        anext = getattr(iterator, "__anext__", None)
-        if callable(anext):
-            with contextlib.suppress(StopAsyncIteration):
-                await anext()  # type: ignore[misc]
-            return
-
-        if hasattr(iterator, "__next__"):
-            await asyncio.to_thread(_sync_next, iterator)  # type: ignore[arg-type]
-            return
-    finally:
-        await _force_close_stream_iterator(iterator)
-
-
 async def _iter_sync_chunks(iterator: Any) -> AsyncIterator[bytes | str]:
     """Yield sync iterator chunks via ``asyncio.to_thread`` to avoid blocking the loop."""
     while True:
@@ -212,6 +190,17 @@ async def _iter_sync_chunks(iterator: Any) -> AsyncIterator[bytes | str]:
         if chunk is _STREAM_SENTINEL:
             break
         yield chunk  # type: ignore[misc]
+
+
+async def _prime_stream_iterator(iterator: Any) -> None:
+    """Advance once so later ``close``/``aclose`` runs generator finally blocks."""
+    anext = getattr(iterator, "__anext__", None)
+    if callable(anext):
+        with contextlib.suppress(StopAsyncIteration):
+            await anext()  # type: ignore[misc]
+        return
+    if hasattr(iterator, "__next__"):
+        await asyncio.to_thread(_sync_next, iterator)
 
 
 async def send_streaming_response(
@@ -228,20 +217,21 @@ async def send_streaming_response(
         iterator = _as_sync_iterator(content)  # type: ignore[arg-type]
         is_async = False
 
-    await send(
-        {
-            "type": "http.response.start",
-            "status": response.status_code,
-            "headers": list(response.raw_headers),
-        }
-    )
-
-    if is_head:
-        await _prime_and_close_stream_iterator(iterator)
-        await send({"type": "http.response.body", "body": b"", "more_body": False})
-        return
-
     try:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": response.status_code,
+                "headers": list(response.raw_headers),
+            }
+        )
+
+        if is_head:
+            # Prime only after start succeeds so a failed start does not advance.
+            await _prime_stream_iterator(iterator)
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+            return
+
         if is_async:
             async for chunk in iterator:
                 data = _chunk_bytes(chunk)
@@ -253,10 +243,8 @@ async def send_streaming_response(
                 if data:
                     await send({"type": "http.response.body", "body": data, "more_body": True})
         await send({"type": "http.response.body", "body": b"", "more_body": False})
-    except BaseException:
-        # Do not prime here: a sync next() may still be running in a worker thread.
+    finally:
         await _force_close_stream_iterator(iterator)
-        raise
 
 
 def error_json(detail: Any, status_code: int) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
