@@ -446,8 +446,11 @@ provider には次の四つの形式を使える。
 ジェネレータ形式の provider は、登録時に `contextlib.contextmanager` または `contextlib.asynccontextmanager` で包む。
 リクエスト時には `AsyncExitStack` に積み、終了処理を contextlib に任せる。
 例外の伝播（ハンドラで起きた例外を `yield` の位置で送出し、`async with` のロールバックを動かす）の実装を、自前で抱え込まないためである。
+provider が `yield` の位置で例外を握りつぶしても、元の例外はそのまま送出し直す。
+失敗やキャンセルを、後処理の都合で成功の応答に変えないためである（Litestar と同じ扱い）。
 
 provider の引数に取れるのは、他の依存と `Request` だけである。
+`Request` は型が一致するときだけ認識し、サブクラスは認識しない（ハンドラの引数と同じ規則）。
 path、query、header、body を provider の引数に取ることはできない。
 認証のようにヘッダーを読む provider は、`Request` を受け取ってそこから読む。
 

@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any, TypeVar
 
-import msgspec
-
-from laminite.compiler import RouteInfo, compile_route, path_param_names
+from laminite.compiler import RouteInfo, compile_route
 from laminite.di import DependencyRegistry
 from laminite.exceptions import HTTPException
 from laminite.response import error_json, send_response
-from laminite.router import Match, MethodNotAllowed, NotFound, Router
+from laminite.router import Match, MethodNotAllowed, NotFound, Router, path_parameter_names
+
+logger = logging.getLogger("laminite")
 
 T = TypeVar("T")
 F = TypeVar("F", bound=Callable[..., Any])
@@ -37,10 +38,8 @@ class Laminite:
         self._middleware: list[tuple[Callable[..., ASGIApp], dict[str, Any]]] = []
         self._exception_handlers: dict[type, Callable[..., Any]] = {}
         self._frozen = False
-        self._encoder = msgspec.json.Encoder()
         self._lifespan_cm: AbstractAsyncContextManager[None] | None = None
         self._overrides: Mapping[type, Any] | None = None
-        # Before freeze: ensure + dispatch. After freeze: middleware stack or dispatcher.
         self._http = self._http_before_freeze
 
     def _ensure_mutable(self) -> None:
@@ -103,7 +102,7 @@ class Laminite:
             handler=handler,
             status_code=status_code,
             offload=offload,
-            path_param_names=path_param_names(path),
+            path_param_names=path_parameter_names(path),
         )
         self._routes.append(info)
         # Placeholder value; replaced at freeze with pipeline.
@@ -155,7 +154,6 @@ class Laminite:
                     info,
                     self._registry,
                     max_body_size=self._max_body_size,
-                    encoder=self._encoder,
                 )
             pipeline = pipelines[key]
             for method in info.methods:
@@ -217,6 +215,13 @@ class Laminite:
                         await self._lifespan_cm.__aenter__()
                     self.freeze(overrides=self._overrides)
                 except Exception as exc:
+                    if self._lifespan_cm is not None:
+                        try:
+                            await self._lifespan_cm.__aexit__(type(exc), exc, exc.__traceback__)
+                        except Exception:
+                            logger.exception("Lifespan cleanup after startup failure raised")
+                        finally:
+                            self._lifespan_cm = None
                     await send(
                         {
                             "type": "lifespan.startup.failed",
@@ -226,10 +231,11 @@ class Laminite:
                     return
                 await send({"type": "lifespan.startup.complete"})
             elif message["type"] == "lifespan.shutdown":
+                cm = self._lifespan_cm
+                self._lifespan_cm = None
                 try:
-                    if self._lifespan_cm is not None:
-                        await self._lifespan_cm.__aexit__(None, None, None)
-                        self._lifespan_cm = None
+                    if cm is not None:
+                        await cm.__aexit__(None, None, None)
                 except Exception as exc:
                     await send(
                         {

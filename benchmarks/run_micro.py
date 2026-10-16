@@ -79,15 +79,17 @@ def _make_runner(app: Any, scenario: str) -> Any:
     return run
 
 
+BUILDERS = {
+    "laminite": build_laminite,
+    "starlette": build_starlette,
+    "fastapi": build_fastapi,
+    "litestar": build_litestar,
+}
+
+
 def _quick() -> None:
-    builders = {
-        "laminite": build_laminite,
-        "starlette": build_starlette,
-        "fastapi": build_fastapi,
-        "litestar": build_litestar,
-    }
     print("framework.scenario  mean_ns  stdev_ns")
-    for framework, builder in builders.items():
+    for framework, builder in BUILDERS.items():
         app = builder()
         for scenario in SCENARIOS:
             run = _make_runner(app, scenario)
@@ -106,13 +108,7 @@ def _pyperf() -> None:
 
     runner = pyperf.Runner(values=5, warmups=3)
     runner.metadata["description"] = "Laminite in-process microbenchmarks"
-    builders = {
-        "laminite": build_laminite,
-        "starlette": build_starlette,
-        "fastapi": build_fastapi,
-        "litestar": build_litestar,
-    }
-    for framework, builder in builders.items():
+    for framework, builder in BUILDERS.items():
         app = builder()
         for scenario in SCENARIOS:
             name = f"{framework}.{scenario}"

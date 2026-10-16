@@ -29,6 +29,27 @@ def test_handler_error_at_startup() -> None:
         pass
 
 
+def test_lifespan_exits_when_freeze_fails() -> None:
+    exited: list[bool] = []
+
+    @asynccontextmanager
+    async def lifespan(app: Laminite) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            exited.append(True)
+
+    app = Laminite(lifespan=lifespan)
+
+    @app.get("/bad")
+    def bad(**kwargs: object) -> None:
+        return None
+
+    with pytest.raises(RuntimeError, match="kwargs"), TestClient(app):
+        pass
+    assert exited == [True]
+
+
 def test_lifespan_value_on_same_loop() -> None:
     @asynccontextmanager
     async def lifespan(app: Laminite) -> AsyncIterator[None]:

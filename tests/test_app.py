@@ -169,8 +169,9 @@ def test_query_and_header_binding() -> None:
 
 
 def test_no_query_collection_without_params() -> None:
-    from laminite.compiler import RouteInfo, analyze_handler, path_param_names
+    from laminite.compiler import RouteInfo, analyze_handler
     from laminite.di import DependencyRegistry
+    from laminite.router import path_parameter_names
 
     app = Laminite()
 
@@ -184,7 +185,7 @@ def test_no_query_collection_without_params() -> None:
         handler=plain,
         status_code=None,
         offload=False,
-        path_param_names=path_param_names("/plain"),
+        path_param_names=path_parameter_names("/plain"),
     )
     compiled = analyze_handler(info, DependencyRegistry())
     assert compiled.needs_query is False

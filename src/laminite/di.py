@@ -19,7 +19,7 @@ class ProviderSpec:
     key: type
     func: Callable[..., Any]
     kind: str  # "sync" | "async" | "sync_cm" | "async_cm"
-    param_types: tuple[type, ...]
+    params: tuple[tuple[str, type], ...]
     needs_request: bool
 
 
@@ -77,8 +77,9 @@ class DependencyRegistry:
             if spec is None:
                 raise ValueError(f"Unregistered dependency: {tp!r}")
             visiting.add(tp)
-            for dep in spec.param_types:
-                visit(dep)
+            for _, dep in spec.params:
+                if dep is not Request:
+                    visit(dep)
             visiting.remove(tp)
             visited.add(tp)
             order.append(spec)
@@ -116,8 +117,7 @@ def _build_provider_spec(func: Callable[..., Any]) -> ProviderSpec:
         kind = "sync"
 
     sig = inspect.signature(func)
-    param_types: list[type] = []
-    needs_request = False
+    params: list[tuple[str, type]] = []
     for name, param in sig.parameters.items():
         if param.kind in (
             inspect.Parameter.VAR_POSITIONAL,
@@ -125,36 +125,22 @@ def _build_provider_spec(func: Callable[..., Any]) -> ProviderSpec:
             inspect.Parameter.POSITIONAL_ONLY,
         ):
             raise TypeError(f"Unsupported parameter kind in provider {func!r}: {name}")
-        ann = _unwrap_dependency_annotation(hints.get(name, str))
-        if _is_request_annotation(ann):
-            needs_request = True
-            continue
-        param_types.append(ann)  # type: ignore[arg-type]
+        ann = strip_annotated(hints.get(name, str))
+        params.append((name, ann))
 
     return ProviderSpec(
         key=key,  # type: ignore[arg-type]
         func=wrapped,
         kind=kind,
-        param_types=tuple(param_types),
-        needs_request=needs_request,
+        params=tuple(params),
+        needs_request=any(tp is Request for _, tp in params),
     )
 
 
-def _unwrap_dependency_annotation(ann: Any) -> Any:
+def strip_annotated(ann: Any) -> Any:
     if get_origin(ann) is Annotated:
         return get_args(ann)[0]
     return ann
-
-
-def _is_request_annotation(ann: Any) -> bool:
-    if ann is Request:
-        return True
-    if isinstance(ann, type):
-        try:
-            return issubclass(ann, Request)
-        except TypeError:
-            return False
-    return getattr(ann, "__name__", None) == "Request"
 
 
 def _unwrap_iterator_type(ret: Any) -> type:
@@ -187,20 +173,7 @@ async def run_providers(
     if request is not None:
         values[Request] = request
     for spec in specs:
-        kwargs: dict[str, Any] = {}
-        # Rebuild kwargs by parameter name from the wrapped callable's underlying function
-        # ProviderSpec stores the wrapped CM / function; inspect its signature.
-        target = _unwrap_callable(spec.func)
-        hints = get_type_hints(target, include_extras=True)
-        for name, _param in inspect.signature(target).parameters.items():
-            ann = _unwrap_dependency_annotation(hints.get(name, str))
-            if _is_request_annotation(ann):
-                if request is None:
-                    raise RuntimeError("Request dependency required but Request was not created")
-                kwargs[name] = request
-            else:
-                kwargs[name] = values[ann]
-
+        kwargs = {name: values[tp] for name, tp in spec.params}
         if spec.kind == "sync":
             values[spec.key] = spec.func(**kwargs)
         elif spec.kind == "async":
@@ -214,8 +187,3 @@ async def run_providers(
         else:
             raise RuntimeError(f"Unknown provider kind: {spec.kind}")
     return values
-
-
-def _unwrap_callable(func: Callable[..., Any]) -> Callable[..., Any]:
-    # contextmanager wraps store the original in __wrapped__
-    return getattr(func, "__wrapped__", func)

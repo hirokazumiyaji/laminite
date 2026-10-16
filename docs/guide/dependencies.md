@@ -52,4 +52,6 @@ def me(user: User, conn: Conn):
     return {"user": user.name, "pool": conn.pool.name}
 ```
 
+A generator provider sees handler exceptions at its `yield`. Even if it swallows the exception, Laminite re-raises it, so a failure or cancellation never becomes a success response.
+
 In tests, override dependencies with `TestClient(app, overrides={Pool: FakePool()})`.

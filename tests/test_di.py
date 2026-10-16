@@ -1,5 +1,6 @@
+import asyncio
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 
 import pytest
@@ -130,6 +131,84 @@ def test_cleanup_exception_becomes_error_response() -> None:
     assert response.status_code == 503
     assert response.json() == {"detail": "cleanup failed"}
     client.close()
+
+
+def test_suppressing_provider_does_not_turn_failure_into_success() -> None:
+    app = Laminite()
+
+    @dataclass
+    class Tx:
+        pass
+
+    @app.provider
+    def tx() -> Iterator[Tx]:
+        with suppress(Exception):
+            yield Tx()
+
+    @app.get("/boom")
+    def boom(t: Tx) -> None:
+        raise RuntimeError("fail")
+
+    client = TestClient(app)
+    assert client.get("/boom").status_code == 500
+    client.close()
+
+
+def test_cancellation_propagates_through_suppressing_provider() -> None:
+    app = Laminite()
+    seen: list[str] = []
+
+    @dataclass
+    class Tx:
+        pass
+
+    @app.provider
+    async def tx() -> AsyncIterator[Tx]:
+        try:
+            yield Tx()
+        except BaseException:
+            seen.append("cleanup")
+
+    @app.get("/")
+    async def root(t: Tx) -> None:
+        raise asyncio.CancelledError
+
+    client = TestClient(app)
+    with pytest.raises(asyncio.CancelledError):
+        client.get("/")
+    assert seen == ["cleanup"]
+    client.close()
+
+
+def test_request_subclass_is_not_request() -> None:
+    class MyRequest(Request):
+        pass
+
+    app = Laminite()
+
+    @app.get("/")
+    def root(request: MyRequest) -> None:
+        return None
+
+    client = TestClient(app)
+    with pytest.raises(ValueError, match="Unregistered"):
+        client.get("/")
+    client.close()
+
+    app2 = Laminite()
+
+    @app2.provider
+    def user(request: MyRequest) -> User:
+        return User("x")
+
+    @app2.get("/")
+    def root2(user: User) -> None:
+        return None
+
+    client2 = TestClient(app2)
+    with pytest.raises(ValueError, match="Unregistered"):
+        client2.get("/")
+    client2.close()
 
 
 def test_unregistered_and_cycle_and_duplicate() -> None:
@@ -281,8 +360,9 @@ def test_override_replaces_provider_with_deps() -> None:
 
 
 def test_no_di_in_pipeline_when_unused() -> None:
-    from laminite.compiler import RouteInfo, analyze_handler, path_param_names
+    from laminite.compiler import RouteInfo, analyze_handler
     from laminite.di import DependencyRegistry
+    from laminite.router import path_parameter_names
 
     def plain() -> dict[str, str]:
         return {"ok": "1"}
@@ -293,8 +373,8 @@ def test_no_di_in_pipeline_when_unused() -> None:
         handler=plain,
         status_code=None,
         offload=False,
-        path_param_names=path_param_names("/"),
+        path_param_names=path_parameter_names("/"),
     )
     compiled = analyze_handler(info, DependencyRegistry())
     assert compiled.request_providers == []
-    assert compiled.dep_arg_names == {}
+    assert compiled.provided_arg_names == {}

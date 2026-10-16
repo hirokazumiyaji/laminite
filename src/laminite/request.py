@@ -60,13 +60,11 @@ class QueryParams(Mapping[str, str]):
 class Request:
     __slots__ = (
         "_body",
-        "_body_loaded",
         "_headers",
         "_max_body_size",
         "_path_params",
         "_query_params",
         "_receive",
-        "_shared_body",
         "scope",
     )
 
@@ -77,7 +75,6 @@ class Request:
         *,
         path_params: dict[str, str] | None = None,
         max_body_size: int = 1_048_576,
-        shared_body: list[bytes | None] | None = None,
     ) -> None:
         self.scope = scope
         self._receive = receive
@@ -85,10 +82,7 @@ class Request:
         self._headers: Headers | None = None
         self._query_params: QueryParams | None = None
         self._body: bytes | None = None
-        self._body_loaded = False
         self._max_body_size = max_body_size
-        # Mutable cell shared with the pipeline so body is received once.
-        self._shared_body: list[bytes | None] = shared_body if shared_body is not None else [None]
 
     @property
     def method(self) -> str:
@@ -123,16 +117,9 @@ class Request:
         return state  # type: ignore[no-any-return]
 
     async def body(self) -> bytes:
-        if self._shared_body[0] is not None:
-            return self._shared_body[0]
-        if self._body_loaded:
-            assert self._body is not None
-            return self._body
-        body = await _receive_body(self._receive, self._max_body_size)
-        self._body = body
-        self._body_loaded = True
-        self._shared_body[0] = body
-        return body
+        if self._body is None:
+            self._body = await _receive_body(self._receive, self._max_body_size)
+        return self._body
 
     async def json(self, tp: type[T] | Any = Any) -> T:
         data = await self.body()

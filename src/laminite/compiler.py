@@ -25,10 +25,10 @@ from urllib.parse import parse_qsl
 import msgspec
 from msgspec import Struct
 
-from laminite.di import DependencyRegistry, ProviderSpec, run_providers
+from laminite.di import DependencyRegistry, ProviderSpec, run_providers, strip_annotated
 from laminite.exceptions import HTTPException
 from laminite.params import Body, Header, Query
-from laminite.request import Request, _Disconnect, _receive_body
+from laminite.request import Request, _Disconnect
 from laminite.response import error_json, render_result, send_response
 
 logger = logging.getLogger("laminite")
@@ -71,13 +71,13 @@ class CompiledRoute:
     body_binding: ArgBinding | None
     body_decoder: msgspec.json.Decoder[Any] | None
     needs_request: bool
+    request_arg_names: tuple[str, ...]
     needs_query: bool
     needs_headers: bool
     request_providers: list[ProviderSpec]
-    dep_arg_names: dict[str, type]
+    provided_arg_names: dict[str, type]
     app_values: dict[type[Any], Any] = field(default_factory=dict)
     kw_template: dict[str, Any] = field(default_factory=dict)
-    call_direct: bool = False  # no args at all
 
 
 def compile_route(
@@ -85,10 +85,9 @@ def compile_route(
     registry: DependencyRegistry,
     *,
     max_body_size: int,
-    encoder: msgspec.json.Encoder,
 ) -> Callable[..., Any]:
     compiled = analyze_handler(info, registry)
-    return build_pipeline(compiled, max_body_size=max_body_size, encoder=encoder)
+    return build_pipeline(compiled, max_body_size=max_body_size)
 
 
 def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRoute:
@@ -121,7 +120,7 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
         if source == "body":
             body_count += 1
 
-        stripped = _strip_annotated(annotation)
+        stripped = strip_annotated(annotation)
         is_list = source == "query" and _is_list_type(stripped)
         header_key: bytes | None = None
         if source == "header":
@@ -148,7 +147,6 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
     if missing:
         raise TypeError(f"Handler {handler!r} missing path parameters: {sorted(missing)}")
 
-    # Build TypedDict for path/query/header
     td_fields: dict[str, Any] = {}
     for b in bindings:
         if b.source not in {"path", "query", "header"}:
@@ -175,16 +173,15 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
     dep_types = {
         b.dep_type for b in bindings if b.source == "dependency" and b.dep_type is not None
     }
-    # Transitively include provider deps that are request-scoped
     request_providers = registry.resolve_order(dep_types)
 
-    needs_request = any(b.source == "request" for b in bindings) or any(
-        p.needs_request for p in request_providers
+    request_arg_names = tuple(b.name for b in bindings if b.source == "request")
+    # The body is always read through Request so handlers and providers share one cache.
+    needs_request = (
+        bool(request_arg_names)
+        or body_binding is not None
+        or any(p.needs_request for p in request_providers)
     )
-    # Also if a provider in the chain needs Request
-    for spec in request_providers:
-        if Request in _provider_dep_types(spec) or spec.needs_request:
-            needs_request = True
 
     header_keys = {
         b.header_key: b.name for b in bindings if b.source == "header" and b.header_key is not None
@@ -194,14 +191,13 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
 
     app_values = dict(registry.app_values())
     kw_template: dict[str, Any] = {}
-    dep_arg_names: dict[str, type] = {}
+    provided_arg_names: dict[str, type] = {}
     for b in bindings:
         if b.source == "dependency" and b.dep_type is not None:
-            dep_arg_names[b.name] = b.dep_type
             if b.dep_type in app_values:
                 kw_template[b.name] = app_values[b.dep_type]
-
-    call_direct = len(bindings) == 0
+            else:
+                provided_arg_names[b.name] = b.dep_type
 
     return CompiledRoute(
         handler=handler,
@@ -216,25 +212,20 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
         body_binding=body_binding,
         body_decoder=body_decoder,
         needs_request=needs_request,
+        request_arg_names=request_arg_names,
         needs_query=any(b.source == "query" for b in bindings),
         needs_headers=any(b.source == "header" for b in bindings),
         request_providers=request_providers,
-        dep_arg_names=dep_arg_names,
+        provided_arg_names=provided_arg_names,
         app_values=app_values,
         kw_template=kw_template,
-        call_direct=call_direct,
     )
-
-
-def _provider_dep_types(spec: ProviderSpec) -> set[type]:
-    return set(spec.param_types)
 
 
 def build_pipeline(
     route: CompiledRoute,
     *,
     max_body_size: int,
-    encoder: msgspec.json.Encoder,
 ) -> Callable[..., Any]:
     handler = route.handler
     params_type = route.params_type
@@ -251,21 +242,17 @@ def build_pipeline(
         is_head: bool,
         exception_handlers: Mapping[type, Callable[..., Any]],
     ) -> None:
-        shared_body: list[bytes | None] = [None]
         request: Request | None = None
         kwargs = dict(route.kw_template)
 
         try:
             if route.needs_request:
                 request = Request(
-                    scope,
-                    receive,
-                    path_params=path_params,
-                    max_body_size=max_body_size,
-                    shared_body=shared_body,
+                    scope, receive, path_params=path_params, max_body_size=max_body_size
                 )
+                for name in route.request_arg_names:
+                    kwargs[name] = request
 
-            # Collect path/query/header into one dict for msgspec.convert
             if params_type is not None:
                 values: dict[str, Any] = {}
                 for b in route.bindings:
@@ -292,28 +279,16 @@ def build_pipeline(
                             values[name] = value.decode("latin-1")
 
                 try:
-                    converted_obj = msgspec.convert(values, params_type, strict=False)
+                    converted = msgspec.convert(values, params_type, strict=False)
                 except msgspec.ValidationError as exc:
-                    status, headers, body = error_json(str(exc), 422)
-                    await send_response(
-                        send, status_code=status, headers=headers, body=body, is_head=is_head
-                    )
+                    await _send_error(send, str(exc), 422, is_head)
                     return
-                converted = dict(converted_obj)  # type: ignore[arg-type]
-                kwargs.update(converted)
+                kwargs.update(converted)  # type: ignore[arg-type]
 
-            # Body — always go through the shared cache (and Request when present)
             if body_binding is not None and body_decoder is not None:
+                assert request is not None
                 try:
-                    if request is not None:
-                        raw = await request.body()
-                    elif shared_body[0] is not None:
-                        raw = shared_body[0]
-                    else:
-                        raw = await _receive_body(receive, max_body_size)
-                        shared_body[0] = raw
-                except _Disconnect:
-                    return
+                    raw = await request.body()
                 except HTTPException as exc:
                     await _send_http_exception(send, exc, is_head)
                     return
@@ -323,141 +298,74 @@ def build_pipeline(
                     try:
                         kwargs[body_binding.name] = body_decoder.decode(raw)
                     except msgspec.ValidationError as exc:
-                        status, headers, body = error_json(str(exc), 422)
-                        await send_response(
-                            send, status_code=status, headers=headers, body=body, is_head=is_head
-                        )
+                        await _send_error(send, str(exc), 422, is_head)
                         return
                     except msgspec.DecodeError as exc:
-                        status, headers, body = error_json(str(exc), 400)
-                        await send_response(
-                            send, status_code=status, headers=headers, body=body, is_head=is_head
-                        )
+                        await _send_error(send, str(exc), 400, is_head)
                         return
 
-            if route.needs_request and request is not None:
-                for b in route.bindings:
-                    if b.source == "request":
-                        kwargs[b.name] = request
-
-            # Dependencies
             stack: AsyncExitStack | None = None
             try:
-                if route.request_providers or route.dep_arg_names:
-                    if route.request_providers:
-                        stack = AsyncExitStack()
-                        await stack.__aenter__()
-                        if request is None and any(
-                            p.needs_request for p in route.request_providers
-                        ):
-                            request = Request(
-                                scope,
-                                receive,
-                                path_params=path_params,
-                                max_body_size=max_body_size,
-                                shared_body=shared_body,
-                            )
-                        dep_values = await run_providers(
-                            route.request_providers,
-                            app_values=route.app_values,
-                            request=request,
-                            stack=stack,
-                        )
-                    else:
-                        dep_values = dict(route.app_values)
-                    for name, tp in route.dep_arg_names.items():
+                if route.request_providers:
+                    stack = AsyncExitStack()
+                    await stack.__aenter__()
+                    dep_values = await run_providers(
+                        route.request_providers,
+                        app_values=route.app_values,
+                        request=request,
+                        stack=stack,
+                    )
+                    for name, tp in route.provided_arg_names.items():
                         kwargs[name] = dep_values[tp]
 
-                if route.call_direct:
-                    result = await _call_handler(handler, {}, route)
+                if route.offload:
+                    result = await asyncio.to_thread(handler, **kwargs)
+                elif route.is_async:
+                    result = await handler(**kwargs)
                 else:
-                    result = await _call_handler(handler, kwargs, route)
+                    result = handler(**kwargs)
 
                 # Render before successful cleanup so encode failures can roll back.
-                status = _resolve_status(status_code_opt, result)
                 status_out, headers, body = render_result(
-                    result, status_code=status, encoder=encoder
+                    result, status_code=_resolve_status(status_code_opt, result)
                 )
             except BaseException as exc:
                 if stack is not None:
+                    # Re-raise even if a provider suppresses, so a failure or a cancellation
+                    # is never turned into a success response.
                     try:
-                        suppress = await stack.__aexit__(type(exc), exc, exc.__traceback__)
+                        await stack.__aexit__(type(exc), exc, exc.__traceback__)
                     except BaseException as cleanup_exc:
                         raise cleanup_exc from exc
-                    finally:
-                        stack = None
-                    if suppress:
-                        status_out, headers, body = render_result(
-                            None, status_code=204, encoder=encoder
-                        )
-                    else:
-                        raise
-                else:
-                    raise
+                raise
             else:
                 if stack is not None:
                     await stack.__aexit__(None, None, None)
-                    stack = None
 
             await send_response(
                 send, status_code=status_out, headers=headers, body=body, is_head=is_head
             )
         except _Disconnect:
             return
-        except HTTPException as exc:
-            handled = await _try_exception_handler(
-                exception_handlers,
-                request,
-                scope,
-                receive,
-                path_params,
-                max_body_size,
-                shared_body,
-                exc,
-            )
-            if handled is not None:
-                status_out, headers, body = handled
-                await send_response(
-                    send, status_code=status_out, headers=headers, body=body, is_head=is_head
-                )
-                return
-            await _send_http_exception(send, exc, is_head)
         except Exception as exc:
-            handled = await _try_exception_handler(
-                exception_handlers,
-                request,
-                scope,
-                receive,
-                path_params,
-                max_body_size,
-                shared_body,
-                exc,
-            )
-            if handled is not None:
-                status_out, headers, body = handled
-                await send_response(
-                    send, status_code=status_out, headers=headers, body=body, is_head=is_head
-                )
+            exc_handler = _find_exception_handler(exception_handlers, exc)
+            if exc_handler is not None:
+                if request is None:
+                    request = Request(
+                        scope, receive, path_params=path_params, max_body_size=max_body_size
+                    )
+                status_out, headers, body = await _run_exception_handler(exc_handler, request, exc)
+            elif isinstance(exc, HTTPException):
+                await _send_http_exception(send, exc, is_head)
                 return
-            logger.exception("Unhandled exception in handler")
-            status_out, headers, body = error_json("Internal Server Error", 500)
+            else:
+                logger.exception("Unhandled exception in handler")
+                status_out, headers, body = error_json("Internal Server Error", 500)
             await send_response(
                 send, status_code=status_out, headers=headers, body=body, is_head=is_head
             )
 
     return pipeline
-
-
-async def _call_handler(
-    handler: Callable[..., Any],
-    kwargs: dict[str, Any],
-    route: CompiledRoute,
-) -> Any:
-    if route.offload:
-        return await asyncio.to_thread(handler, **kwargs)
-    if route.is_async:
-        return await handler(**kwargs)
-    return handler(**kwargs)
 
 
 def _resolve_status(status_code: int | None, result: Any) -> int:
@@ -468,6 +376,11 @@ def _resolve_status(status_code: int | None, result: Any) -> int:
     return 200
 
 
+async def _send_error(send: Any, detail: Any, status_code: int, is_head: bool) -> None:
+    status, headers, body = error_json(detail, status_code)
+    await send_response(send, status_code=status, headers=headers, body=body, is_head=is_head)
+
+
 async def _send_http_exception(send: Any, exc: HTTPException, is_head: bool) -> None:
     status, headers, body = error_json(exc.detail, exc.status_code)
     if exc.headers:
@@ -476,39 +389,23 @@ async def _send_http_exception(send: Any, exc: HTTPException, is_head: bool) -> 
     await send_response(send, status_code=status, headers=headers, body=body, is_head=is_head)
 
 
-async def _try_exception_handler(
-    handlers: Mapping[type, Callable[..., Any]],
-    request: Request | None,
-    scope: dict[str, Any],
-    receive: Any,
-    path_params: dict[str, str],
-    max_body_size: int,
-    shared_body: list[bytes | None],
-    exc: BaseException,
-) -> tuple[int, list[tuple[bytes, bytes]], bytes] | None:
-    handler = None
+def _find_exception_handler(
+    handlers: Mapping[type, Callable[..., Any]], exc: BaseException
+) -> Callable[..., Any] | None:
     for cls in type(exc).mro():
-        if cls in handlers:
-            handler = handlers[cls]
-            break
-    if handler is None:
-        return None
-    if request is None:
-        request = Request(
-            scope,
-            receive,
-            path_params=path_params,
-            max_body_size=max_body_size,
-            shared_body=shared_body,
-        )
+        handler = handlers.get(cls)
+        if handler is not None:
+            return handler
+    return None
+
+
+async def _run_exception_handler(
+    handler: Callable[..., Any], request: Request, exc: BaseException
+) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
     try:
         result = handler(request, exc)
         if inspect.isawaitable(result):
             result = await result
-        from laminite.response import Response
-
-        if isinstance(result, Response):
-            return result.status_code, list(result.raw_headers), result.body
         return render_result(result, status_code=200)
     except Exception:
         logger.exception("Exception handler failed")
@@ -554,12 +451,6 @@ def _resolve_source(
     return "query", alias, None
 
 
-def _strip_annotated(annotation: Any) -> Any:
-    if get_origin(annotation) is Annotated:
-        return get_args(annotation)[0]
-    return annotation
-
-
 def _is_list_type(annotation: Any) -> bool:
     annotation = _unwrap_optional(annotation)
     return get_origin(annotation) is list
@@ -585,9 +476,3 @@ def _is_query_compatible(annotation: Any) -> bool:
     if origin is Union or origin is UnionType:
         return all(_is_query_compatible(a) for a in get_args(annotation) if a is not type(None))
     return False
-
-
-def path_param_names(path: str) -> frozenset[str]:
-    from laminite.router import path_parameter_names
-
-    return path_parameter_names(path)

@@ -11,6 +11,7 @@ CONTENT_TYPE_JSON = (b"content-type", b"application/json")
 CONTENT_TYPE_TEXT = (b"content-type", b"text/plain; charset=utf-8")
 CONTENT_TYPE_OCTET = (b"content-type", b"application/octet-stream")
 
+# One encoder for every body, so success and error responses encode identically.
 _ENCODER = msgspec.json.Encoder()
 
 
@@ -61,63 +62,33 @@ def render_result(
     result: Any,
     *,
     status_code: int,
-    encoder: msgspec.json.Encoder = _ENCODER,
 ) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
     """Render a handler return value to status, headers, body."""
-    result_type: type[Any] = type(result)
-    renderer = _RENDERERS.get(result_type)
+    renderer = _RENDERERS.get(type(result))
     if renderer is not None:
-        return renderer(result, status_code, encoder)
+        return renderer(result, status_code)
     if isinstance(result, Response):
-        return _render_response(result, status_code, encoder)
-    return _render_json(result, status_code, encoder)
+        return result.status_code, list(result.raw_headers), result.body
+    return _render_json(result, status_code)
 
 
-def _render_response(
-    result: Response,
-    _status_code: int,
-    _encoder: msgspec.json.Encoder,
-) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
-    headers = list(result.raw_headers)
-    return result.status_code, headers, result.body
-
-
-def _render_none(
-    _result: None,
-    status_code: int,
-    _encoder: msgspec.json.Encoder,
-) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
+def _render_none(_result: None, status_code: int) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
     return status_code, [], b""
 
 
-def _render_bytes(
-    result: bytes,
-    status_code: int,
-    _encoder: msgspec.json.Encoder,
-) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
+def _render_bytes(result: bytes, status_code: int) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
     return status_code, [CONTENT_TYPE_OCTET], result
 
 
-def _render_str(
-    result: str,
-    status_code: int,
-    _encoder: msgspec.json.Encoder,
-) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
+def _render_str(result: str, status_code: int) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
     return status_code, [CONTENT_TYPE_TEXT], result.encode("utf-8")
 
 
-def _render_json(
-    result: Any,
-    status_code: int,
-    encoder: msgspec.json.Encoder,
-) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
-    return status_code, [CONTENT_TYPE_JSON], encoder.encode(result)
+def _render_json(result: Any, status_code: int) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
+    return status_code, [CONTENT_TYPE_JSON], _ENCODER.encode(result)
 
 
-_Renderer = Callable[
-    [Any, int, msgspec.json.Encoder],
-    tuple[int, list[tuple[bytes, bytes]], bytes],
-]
+_Renderer = Callable[[Any, int], tuple[int, list[tuple[bytes, bytes]], bytes]]
 
 _RENDERERS: dict[type[Any], _Renderer] = {
     type(None): _render_none,
@@ -152,4 +123,4 @@ async def send_response(
 
 
 def error_json(detail: Any, status_code: int) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
-    return _render_json({"detail": detail}, status_code, _ENCODER)
+    return _render_json({"detail": detail}, status_code)
