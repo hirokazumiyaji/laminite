@@ -83,11 +83,17 @@ def instrument_app(
             previous(request, exc)
 
     app._on_unhandled_exception = on_unhandled
-    app.add_middleware(
-        _otel_middleware,
-        tracer_provider=tracer_provider,
-        meter_provider=meter_provider,
-        **options,
+    # Insert at front so OTEL is outermost after freeze's reversed wrap.
+    app._middleware.insert(
+        0,
+        (
+            _otel_middleware,
+            {
+                "tracer_provider": tracer_provider,
+                "meter_provider": meter_provider,
+                **options,
+            },
+        ),
     )
     app._laminite_otel_instrumented = True  # type: ignore[attr-defined]
     return app

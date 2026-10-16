@@ -109,3 +109,54 @@ def test_instrument_after_freeze_raises() -> None:
     except RuntimeError:
         raised = True
     assert raised
+
+
+def test_instrument_app_is_idempotent() -> None:
+    provider, exporter = _setup_tracer()
+    app = Laminite()
+
+    @app.get("/")
+    def root() -> dict[str, str]:
+        return {"ok": "1"}
+
+    instrument_app(app, tracer_provider=provider)
+    instrument_app(app, tracer_provider=provider)
+
+    client = TestClient(app)
+    assert client.get("/").status_code == 200
+    client.close()
+
+    server = [s for s in exporter.get_finished_spans() if s.name.startswith("GET")]
+    assert len(server) == 1
+
+
+def test_otel_is_outermost_when_other_middleware_exists() -> None:
+    """Existing middleware must run inside the active server span."""
+    provider, exporter = _setup_tracer()
+    app = Laminite()
+    seen_recording: list[bool] = []
+
+    class Capture:
+        def __init__(self, app: object) -> None:
+            self.app = app
+
+        async def __call__(self, scope: dict, receive: object, send: object) -> None:
+            from opentelemetry import trace
+
+            span = trace.get_current_span()
+            seen_recording.append(span.is_recording())
+            await self.app(scope, receive, send)  # type: ignore[operator]
+
+    @app.get("/")
+    def root() -> dict[str, str]:
+        return {"ok": "1"}
+
+    app.add_middleware(Capture)
+    instrument_app(app, tracer_provider=provider)
+
+    client = TestClient(app)
+    assert client.get("/").status_code == 200
+    client.close()
+
+    assert seen_recording == [True]
+    assert exporter.get_finished_spans()
