@@ -44,11 +44,11 @@ def _otel_middleware(
     **options: Any,
 ) -> ASGIApp:
     enricher = _RouteSpanEnricher(app)
+    options.setdefault("exclude_spans", ["receive", "send"])
     return OpenTelemetryMiddleware(
         enricher,
         tracer_provider=tracer_provider,
         meter_provider=meter_provider,
-        exclude_spans=["receive", "send"],
         **options,
     )
 
