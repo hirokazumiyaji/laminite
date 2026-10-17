@@ -148,19 +148,18 @@ class Laminite:
             return
         if overrides is not None:
             self._overrides = overrides
-        # Apply freeze-time overrides to the primary ASGI app only; keep the
-        # base registry intact so http_with_overrides can still diverge per client.
-        registry = self._registry.with_overrides(self._overrides)
-        self._http = self._build_http_asgi(registry, primary=True)
+        # Build the primary ASGI app from an override-applied registry while
+        # keeping the base registry intact so http_with_overrides can diverge per client.
+        self._http = self._build_http_asgi(self._registry.with_overrides(self._overrides))
         self._frozen = True
 
     def http_with_overrides(self, overrides: Mapping[type, Any]) -> ASGIApp:
         """Return an HTTP ASGI app with dependency overrides; does not mutate this app."""
         if not self._frozen:
             self.freeze()
-        return self._build_http_asgi(self._registry.with_overrides(overrides), primary=False)
+        return self._build_http_asgi(self._registry.with_overrides(overrides))
 
-    def _build_http_asgi(self, registry: DependencyRegistry, *, primary: bool) -> ASGIApp:
+    def _build_http_asgi(self, registry: DependencyRegistry) -> ASGIApp:
         pipelines: dict[int, Any] = {}
         router: Router[Any] = Router()
         for info in self._routes:
@@ -175,15 +174,8 @@ class Laminite:
             for method in info.methods:
                 router.add(info.path, method, pipeline)
 
-        if primary:
-            self._router = router
-
-        exception_handlers = self._exception_handlers
-
         async def dispatcher(scope: dict[str, Any], receive: Any, send: Any) -> None:
-            await self._dispatch(
-                scope, receive, send, router=router, exception_handlers=exception_handlers
-            )
+            await self._dispatch(scope, receive, send, router, self._exception_handlers)
 
         app: ASGIApp = dispatcher
         for cls, options in reversed(self._middleware):
@@ -199,20 +191,15 @@ class Laminite:
         scope: dict[str, Any],
         receive: Any,
         send: Any,
-        *,
-        router: Router[Any] | None = None,
-        exception_handlers: Mapping[type, Callable[..., Any]] | None = None,
+        router: Router[Any],
+        exception_handlers: Mapping[type, Callable[..., Any]],
     ) -> None:
         if "state" not in scope:
             scope["state"] = {}
         method = scope["method"]
         path = scope["path"]
-        active_router = router if router is not None else self._router
-        handlers = (
-            exception_handlers if exception_handlers is not None else self._exception_handlers
-        )
         try:
-            match: Match[Any] = active_router.resolve(method, path)
+            match: Match[Any] = router.resolve(method, path)
         except NotFound:
             status, headers, body = error_json("Not Found", 404)
             await send_response(
@@ -235,7 +222,7 @@ class Laminite:
             send,
             path_params=match.path_params,
             is_head=match.is_head or method == "HEAD",
-            exception_handlers=handlers,
+            exception_handlers=exception_handlers,
         )
 
     async def _lifespan(self, receive: Any, send: Any) -> None:
