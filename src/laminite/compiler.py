@@ -254,7 +254,9 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
             else:
                 provided_arg_names[b.name] = b.dep_type
 
-    path_params_only = params_type is not None and not needs_query and not needs_headers
+    path_params_only = (
+        params_type is not None and not needs_query and not needs_headers and not cookie_keys
+    )
     needs_exit_stack = any(p.kind in {"sync_cm", "async_cm"} for p in request_providers)
     bare_call = (
         not kw_template

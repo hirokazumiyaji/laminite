@@ -38,12 +38,13 @@ class Headers(Mapping[str, str]):
     def getlist(self, key: str) -> list[str]:
         multi = self._multi
         if multi is None:
-            multi = {}
+            built: dict[str, list[str]] = {}
             for key_bytes, value in self._pairs:
-                multi.setdefault(key_bytes.decode("latin-1").lower(), []).append(
+                built.setdefault(key_bytes.decode("latin-1").lower(), []).append(
                     value.decode("latin-1")
                 )
-            self._multi = multi
+            multi = built
+            self._multi = built
         return list(multi.get(key.lower(), []))
 
 
