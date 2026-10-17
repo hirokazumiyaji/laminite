@@ -12,6 +12,7 @@ from laminite.di import DependencyRegistry
 from laminite.exceptions import HTTPException
 from laminite.response import error_json, send_response
 from laminite.router import Match, MethodNotAllowed, NotFound, Router, path_parameter_names
+from laminite.routing import APIRouter, _validate_prefix
 from laminite.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger("laminite")
@@ -140,21 +141,24 @@ class Laminite:
         max_body_size: int | None,
     ) -> None:
         self._ensure_mutable()
-        methods_t = tuple(m.upper() for m in methods)
         info = RouteInfo(
             path=path,
-            methods=methods_t,
+            methods=tuple(m.upper() for m in methods),
             handler=handler,
             status_code=status_code,
             offload=offload,
             path_param_names=path_parameter_names(path),
             max_body_size=max_body_size,
         )
+        self._add_route_info(info)
+
+    def _add_route_info(self, info: RouteInfo) -> None:
+        self._ensure_mutable()
         self._routes.append(info)
         # Registration-time validation only (duplicate routes, param-name
         # conflicts); dispatch uses the frozen table built in _build_http_asgi.
-        for method in methods_t:
-            self._router.add(path, method, info)
+        for method in info.methods:
+            self._router.add(info.path, method, info)
 
     def provide(self, tp: type[T], instance: T) -> None:
         self._ensure_mutable()
@@ -167,6 +171,13 @@ class Laminite:
     def add_middleware(self, cls: Callable[..., ASGIApp], **options: Any) -> None:
         self._ensure_mutable()
         self._middleware.append((cls, options))
+
+    def include_router(self, router: APIRouter, *, prefix: str = "") -> None:
+        """Flatten ``router`` into this app. No per-request mount overhead after freeze."""
+        self._ensure_mutable()
+        _validate_prefix(prefix)
+        for info in router.iter_route_infos(prefix=prefix):
+            self._add_route_info(info)
 
     def exception_handler(self, exc_type: type[E]) -> Callable[[H], H]:
         def decorator(func: H) -> H:
