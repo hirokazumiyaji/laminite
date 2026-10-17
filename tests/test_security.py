@@ -30,6 +30,14 @@ def test_response_rejects_crlf_in_headers() -> None:
         Response(b"ok", media_type="text/plain; charset=utf-8\u2603")
 
 
+def test_response_rejects_control_chars_in_headers() -> None:
+    for ctl in ("\x07", "\x1b", "\x7f", "\x0b", "\x0c"):
+        with pytest.raises(ValueError):
+            Response(b"ok", headers={"x-a": f"before{ctl}after"})
+    # HTAB and SP are legal field-content and must stay allowed.
+    Response(b"ok", headers={"x-a": "has\tTAB and space"})
+
+
 def test_http_exception_rejects_crlf_in_headers() -> None:
     with pytest.raises(ValueError):
         HTTPException(400, headers={"x-a": "one\ntwo"})
@@ -98,6 +106,14 @@ def test_invalid_content_length_returns_400() -> None:
         headers={"content-type": "application/json", "content-length": "abc"},
     )
     assert res.status_code == 400
+    # Non-RFC syntax (sign, underscore) is also rejected.
+    for bad in ("+100", "-0", "1_000"):
+        res = client.post(
+            "/items",
+            content=b'{"name":"a"}',
+            headers={"content-type": "application/json", "content-length": bad},
+        )
+        assert res.status_code == 400, bad
     client.close()
 
 
@@ -177,7 +193,56 @@ def test_json_body_requires_json_content_type() -> None:
         headers={"content-type": "application/vnd.api+json"},
     )
     assert plus.status_code == 200
+
+    # Structured suffix must have a nonempty subtype prefix.
+    bare_suffix = client.post(
+        "/items",
+        content=b'{"name":"c"}',
+        headers={"content-type": "application/+json"},
+    )
+    assert bare_suffix.status_code == 415
     client.close()
+
+
+def test_bad_content_type_rejected_before_body_receive() -> None:
+    app = Laminite(max_body_size=10_000)
+
+    @app.post("/items")
+    async def create(item: Item) -> dict[str, str]:
+        return {"name": item.name}
+
+    receive_calls = {"n": 0}
+
+    async def call() -> int:
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/items",
+            "raw_path": b"/items",
+            "query_string": b"",
+            "headers": [(b"content-type", b"text/plain")],
+            "client": ("test", 1),
+            "server": ("test", 80),
+            "state": {},
+        }
+
+        async def receive() -> dict:
+            receive_calls["n"] += 1
+            return {"type": "http.request", "body": b"A" * 500, "more_body": False}
+
+        messages: list[dict] = []
+
+        async def send(message: dict) -> None:
+            messages.append(message)
+
+        await app(scope, receive, send)
+        return next(m["status"] for m in messages if m["type"] == "http.response.start")
+
+    assert asyncio.run(call()) == 415
+    assert receive_calls["n"] == 0
 
 
 def test_route_max_body_size_override() -> None:

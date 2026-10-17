@@ -33,9 +33,10 @@ CONTENT_TYPE_OCTET = (b"content-type", b"application/octet-stream")
 # One encoder for every body, so success and error responses encode identically.
 _ENCODER = msgspec.json.Encoder()
 
-# RFC 9110 token / field-name; also reject CR/LF/NUL in values.
+# Prevent header-injection: names must be RFC 9110 tokens; values must be
+# RFC 9110 field-content (VCHAR / SP / HTAB), so reject every other CTL.
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
-_HEADER_FORBIDDEN = frozenset("\r\n\x00")
+_HEADER_VALUE_INVALID_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 
 
 def validate_header_name(name: str) -> None:
@@ -44,7 +45,7 @@ def validate_header_name(name: str) -> None:
 
 
 def validate_header_value(value: str) -> None:
-    if _HEADER_FORBIDDEN.intersection(value):
+    if _HEADER_VALUE_INVALID_RE.search(value):
         raise ValueError(f"Invalid header value: {value!r}")
     try:
         value.encode("latin-1")
@@ -52,9 +53,13 @@ def validate_header_value(value: str) -> None:
         raise ValueError(f"Invalid header value: {value!r}") from exc
 
 
-def encode_header_pair(name: str, value: str) -> tuple[bytes, bytes]:
+def validate_header_pair(name: str, value: str) -> None:
     validate_header_name(name)
     validate_header_value(value)
+
+
+def encode_header_pair(name: str, value: str) -> tuple[bytes, bytes]:
+    validate_header_pair(name, value)
     return name.lower().encode("latin-1"), value.encode("latin-1")
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, TypeVar
 from urllib.parse import parse_qsl
@@ -33,20 +34,24 @@ class Headers(Mapping[str, str]):
         return self._store.get(key.lower(), default)
 
 
+def parse_query_pairs(query_string: bytes, max_num_fields: int | None) -> list[tuple[str, str]]:
+    try:
+        return parse_qsl(
+            query_string.decode("latin-1"),
+            keep_blank_values=True,
+            max_num_fields=max_num_fields,
+        )
+    except ValueError as exc:
+        from laminite.exceptions import HTTPException
+
+        raise HTTPException(400, "Too many query fields") from exc
+
+
 class QueryParams(Mapping[str, str]):
     __slots__ = ("_items", "_multi")
 
     def __init__(self, query_string: bytes, *, max_num_fields: int | None = None) -> None:
-        try:
-            pairs = parse_qsl(
-                query_string.decode("latin-1"),
-                keep_blank_values=True,
-                max_num_fields=max_num_fields,
-            )
-        except ValueError as exc:
-            from laminite.exceptions import HTTPException
-
-            raise HTTPException(400, "Too many query fields") from exc
+        pairs = parse_query_pairs(query_string, max_num_fields)
         multi: dict[str, list[str]] = {}
         for key, value in pairs:
             multi.setdefault(key, []).append(value)
@@ -144,6 +149,9 @@ class Request:
         return msgspec.json.decode(data, type=tp)
 
 
+_CONTENT_LENGTH_RE = re.compile(r"^[0-9]+$")
+
+
 def _reject_oversized_content_length(
     headers: Sequence[tuple[bytes, bytes]], max_body_size: int
 ) -> None:
@@ -154,12 +162,9 @@ def _reject_oversized_content_length(
         if key != b"content-length":
             continue
         raw = value.decode("latin-1").strip()
-        try:
-            length = int(raw)
-        except ValueError as exc:
-            raise HTTPException(400, "Invalid Content-Length") from exc
-        if length < 0:
+        if not _CONTENT_LENGTH_RE.fullmatch(raw):
             raise HTTPException(400, "Invalid Content-Length")
+        length = int(raw)
         if seen is not None and length != seen:
             raise HTTPException(400, "Invalid Content-Length")
         seen = length
@@ -171,8 +176,13 @@ def is_json_content_type(content_type: str | None) -> bool:
     if content_type is None:
         return False
     media = content_type.split(";", 1)[0].strip().lower()
-    return media == "application/json" or (
-        media.startswith("application/") and media.endswith("+json")
+    if media == "application/json":
+        return True
+    prefix, suffix = "application/", "+json"
+    return (
+        media.startswith(prefix)
+        and media.endswith(suffix)
+        and len(media) > len(prefix) + len(suffix)
     )
 
 

@@ -24,7 +24,6 @@ from typing import (
     get_origin,
     get_type_hints,
 )
-from urllib.parse import parse_qsl
 from uuid import UUID
 
 import msgspec
@@ -39,9 +38,10 @@ from laminite.di import (
 )
 from laminite.exceptions import HTTPException
 from laminite.params import Body, Header, Query
-from laminite.request import Request, _Disconnect, is_json_content_type
+from laminite.request import Request, _Disconnect, is_json_content_type, parse_query_pairs
 from laminite.response import (
     StreamingResponse,
+    encode_header_pair,
     error_json,
     render_result,
     send_response,
@@ -294,15 +294,7 @@ def build_pipeline(
                     if b.source == "path":
                         values[b.name] = path_params[b.name]
                 if route.needs_query:
-                    try:
-                        raw_q = parse_qsl(
-                            scope.get("query_string", b"").decode("latin-1"),
-                            keep_blank_values=True,
-                            max_num_fields=max_query_fields,
-                        )
-                    except ValueError:
-                        await _send_error(send, "Too many query fields", 400, is_head)
-                        return
+                    raw_q = parse_query_pairs(scope.get("query_string", b""), max_query_fields)
                     for key, value in raw_q:
                         arg_name = route.query_key_to_name.get(key)
                         if arg_name is None:
@@ -327,14 +319,19 @@ def build_pipeline(
 
             if body_binding is not None and body_decoder is not None:
                 assert request is not None
+                # Validate Content-Type before consuming the body so a mismatched
+                # client never gets to transfer up to max_body_size bytes.
+                content_type = request.headers.get("content-type")
+                if content_type is not None and not is_json_content_type(content_type):
+                    await _send_error(send, "Unsupported Media Type", 415, is_head)
+                    return
                 # Let HTTPException (e.g. 413) reach the outer handler path so
                 # @app.exception_handler(HTTPException) applies consistently.
                 raw = await request.body()
                 if not raw and body_binding.has_default:
                     kwargs[body_binding.name] = body_binding.default
                 else:
-                    content_type = request.headers.get("content-type")
-                    if not is_json_content_type(content_type):
+                    if content_type is None:
                         await _send_error(send, "Unsupported Media Type", 415, is_head)
                         return
                     try:
@@ -474,7 +471,7 @@ async def _send_http_exception(send: Any, exc: HTTPException, is_head: bool) -> 
     status, headers, body = error_json(exc.detail, exc.status_code)
     if exc.headers:
         for key, value in exc.headers.items():
-            headers.append((key.lower().encode("latin-1"), value.encode("latin-1")))
+            headers.append(encode_header_pair(key, value))
     await send_response(send, status_code=status, headers=headers, body=body, is_head=is_head)
 
 
