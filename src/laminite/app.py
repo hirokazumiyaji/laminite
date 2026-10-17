@@ -221,7 +221,12 @@ class Laminite:
             return self._openapi
         registry = self._registry.with_overrides(self._overrides)
         analyzed = [(info, analyze_handler(info, registry)) for info in self._routes]
-        return build_openapi(analyzed, title=self.title, version=self.version)
+        doc = build_openapi(analyzed, title=self.title, version=self.version)
+        if self._frozen:
+            # Route registration is closed after freeze, so this document cannot
+            # become stale; cache it just like the freeze-time openapi_url case.
+            self._openapi = doc
+        return doc
 
     def freeze(self, *, overrides: Mapping[type, Any] | None = None) -> None:
         if self._frozen:
@@ -289,8 +294,12 @@ class Laminite:
             for method in info.methods:
                 router.add(info.path, method, pipeline)
 
-        self._openapi = build_openapi(analyzed, title=self.title, version=self.version)
         if self.openapi_url is not None:
+            # Build once from the freeze-time registry. Per-client overrides
+            # replace instances, never schemas, so they must not rewrite the
+            # cached document.
+            if self._openapi is None:
+                self._openapi = build_openapi(analyzed, title=self.title, version=self.version)
             body = encode_openapi(self._openapi)
 
             def openapi() -> Response:
