@@ -520,7 +520,7 @@ class Request:
     scope: Scope
     method: str
     path: str
-    path_params: dict[str, str]
+    path_params: Mapping[str, str]
     headers: Headers  # 小文字のヘッダー名で引ける読み取り専用の対応表
     query_params: QueryParams  # 同じキーの複数の値を保持する読み取り専用の対応表
     state: dict[str, Any]  # scope["state"] を指す。ミドルウェアからハンドラへ値を渡すのに使う

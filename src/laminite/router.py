@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TypeVar
 
 V = TypeVar("V")
@@ -11,8 +13,9 @@ V = TypeVar("V")
 _PARAM_RE = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# Shared empty path-params for static Matches; resolve must not mutate this.
-_EMPTY_PARAMS: dict[str, str] = {}
+# Read-only shared empty path-params for prebuilt static Matches: a mutable
+# singleton here would leak writes across every static resolve.
+_EMPTY_PARAMS: Mapping[str, str] = MappingProxyType({})
 
 
 class NotFound(Exception):
@@ -27,7 +30,7 @@ class MethodNotAllowed(Exception):
 @dataclass(slots=True)
 class Match[V]:
     value: V
-    path_params: dict[str, str]
+    path_params: Mapping[str, str]
     is_head: bool = False
 
 

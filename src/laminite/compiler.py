@@ -307,7 +307,7 @@ def build_pipeline(
         receive: Any,
         send: Any,
         *,
-        path_params: dict[str, str],
+        path_params: Mapping[str, str],
         is_head: bool,
         exception_handlers: Mapping[type, Callable[..., Any]],
     ) -> None:
