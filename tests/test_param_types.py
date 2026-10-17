@@ -12,7 +12,7 @@ from uuid import UUID
 import msgspec
 import pytest
 
-from laminite import Header, Laminite, Query
+from laminite import Body, Header, Laminite, Query
 from laminite.testing import TestClient
 
 UserId = NewType("UserId", int)
@@ -220,4 +220,76 @@ def test_uuid_strenum_literal_date_decimal_path_query_header() -> None:
         == 422
     )
     assert client.get("/things/not-a-uuid").status_code == 422
+    client.close()
+
+
+def test_annotated_optional_list_query_param_collects_repeated_keys() -> None:
+    app = Laminite()
+
+    @app.get("/items")
+    def items(
+        ids: Annotated[list[int], msgspec.Meta(min_length=1)] | None = None,
+    ) -> dict[str, list[int] | None]:
+        return {"ids": ids}
+
+    client = TestClient(app)
+    assert client.get("/items", query={"ids": ["5", "10"]}).json() == {"ids": [5, 10]}
+    client.close()
+
+
+def test_annotated_optional_list_query_param_meta_enforced() -> None:
+    app = Laminite()
+
+    @app.get("/items")
+    def items(
+        ids: Annotated[list[int], msgspec.Meta(max_length=1)] | None = None,
+    ) -> dict[str, list[int] | None]:
+        return {"ids": ids}
+
+    client = TestClient(app)
+    assert client.get("/items", query={"ids": ["5"]}).json() == {"ids": [5]}
+    assert client.get("/items", query={"ids": ["5", "10"]}).status_code == 422
+    client.close()
+
+
+def test_annotated_optional_dependency_resolved() -> None:
+    app = Laminite()
+    app.provide(User, User("real"))
+
+    @app.get("/user")
+    def read(user: Annotated[User, msgspec.Meta()] | None = None) -> dict[str, str]:
+        assert user is not None
+        return {"name": user.name}
+
+    client = TestClient(app)
+    assert client.get("/user").json() == {"name": "real"}
+    client.close()
+
+
+def test_annotated_optional_struct_body_detected() -> None:
+    app = Laminite()
+
+    @app.post("/items")
+    def create(
+        body: Annotated[Item, msgspec.Meta()] | None = None,
+    ) -> dict[str, str | None]:
+        return {"name": body.name if body else None}
+
+    client = TestClient(app)
+    assert client.post("/items", json={"name": "x"}).json() == {"name": "x"}
+    assert client.post("/items").json() == {"name": None}
+    client.close()
+
+
+def test_annotated_optional_list_body_marker_detected() -> None:
+    app = Laminite()
+
+    @app.post("/items")
+    def create(
+        body: Annotated[list[Item], Body()] | None = None,
+    ) -> dict[str, int]:
+        return {"count": len(body or [])}
+
+    client = TestClient(app)
+    assert client.post("/items", json=[{"name": "x"}, {"name": "y"}]).json() == {"count": 2}
     client.close()

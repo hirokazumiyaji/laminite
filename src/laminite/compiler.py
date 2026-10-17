@@ -438,11 +438,13 @@ def _resolve_source(
     if name in path_params:
         return "path", None, None
 
-    raw = annotation
+    # Peel an Optional wrapper first so `Annotated[X, Marker] | None` and
+    # `Annotated[X, Marker]` take the same classification path.
+    raw = _unwrap_optional(annotation)
     alias: str | None = None
     marker_source: str | None = None
-    if get_origin(annotation) is Annotated:
-        args = get_args(annotation)
+    if get_origin(raw) is Annotated:
+        args = get_args(raw)
         raw = args[0]
         for meta in args[1:]:
             if isinstance(meta, Header):
@@ -459,7 +461,7 @@ def _resolve_source(
     if marker_source is not None:
         return marker_source, alias, None
 
-    core = _unwrap_optional(raw)
+    core = strip_annotated(_unwrap_optional(raw))
     if isinstance(core, type) and registry.has(core):
         return "dependency", None, core
     if isinstance(core, type) and issubclass(core, Struct):
@@ -471,7 +473,7 @@ def _resolve_source(
 
 
 def _is_list_type(annotation: Any) -> bool:
-    annotation = _unwrap_optional(annotation)
+    annotation = strip_annotated(_unwrap_optional(annotation))
     return get_origin(annotation) is list
 
 
