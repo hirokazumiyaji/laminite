@@ -28,6 +28,10 @@ class Color(StrEnum):
     BLUE = "blue"
 
 
+class Item(msgspec.Struct):
+    name: str
+
+
 def test_unregistered_optional_dependency_rejected_at_freeze() -> None:
     app = Laminite()
 
@@ -92,6 +96,50 @@ def test_annotated_list_path_param_rejected_at_freeze() -> None:
     client = TestClient(app)
     with pytest.raises(TypeError, match="list"):
         client.get("/items/1")
+    client.close()
+
+
+def test_optional_annotated_meta_query_param_enforced() -> None:
+    app = Laminite()
+
+    @app.get("/page")
+    def page(
+        n: Annotated[int, msgspec.Meta(ge=1)] | None = None,
+    ) -> dict[str, int | None]:
+        return {"n": n}
+
+    client = TestClient(app)
+    assert client.get("/page", query={"n": "5"}).json() == {"n": 5}
+    assert client.get("/page", query={"n": "0"}).status_code == 422
+    assert client.get("/page").json() == {"n": None}
+    client.close()
+
+
+def test_list_of_annotated_meta_query_param_enforced() -> None:
+    app = Laminite()
+
+    @app.get("/items")
+    def items(
+        ids: list[Annotated[int, msgspec.Meta(ge=1)]] | None = None,
+    ) -> dict[str, list[int] | None]:
+        return {"ids": ids}
+
+    client = TestClient(app)
+    assert client.get("/items", query={"ids": ["5", "10"]}).json() == {"ids": [5, 10]}
+    assert client.get("/items", query={"ids": ["5", "0"]}).status_code == 422
+    client.close()
+
+
+def test_optional_struct_auto_detected_as_body() -> None:
+    app = Laminite()
+
+    @app.post("/items")
+    def create(body: Item | None = None) -> dict[str, str | None]:
+        return {"name": body.name if body else None}
+
+    client = TestClient(app)
+    assert client.post("/items", json={"name": "x"}).json() == {"name": "x"}
+    assert client.post("/items").json() == {"name": None}
     client.close()
 
 

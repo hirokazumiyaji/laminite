@@ -128,16 +128,17 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
         has_default = param.default is not inspect.Parameter.empty
         default = param.default if has_default else None
         source, alias, dep_type = _resolve_source(name, annotation, info.path_param_names, registry)
+        bare = strip_annotated(annotation)
         if source == "path":
             covered_path.add(name)
-            if _is_list_type(strip_annotated(annotation)):
+            if _is_list_type(bare):
                 raise TypeError(f"Path parameter {name!r} cannot be a list type")
         if source == "body":
             body_count += 1
 
         # Keep msgspec.Meta (and other non-marker metadata) for TypedDict / Decoder.
         stripped = strip_param_markers(annotation)
-        is_list = source == "query" and _is_list_type(strip_annotated(annotation))
+        is_list = source == "query" and _is_list_type(bare)
         header_key: bytes | None = None
         if source == "header":
             header_name = alias if alias is not None else name.replace("_", "-")
@@ -458,15 +459,15 @@ def _resolve_source(
     if marker_source is not None:
         return marker_source, alias, None
 
-    # Unwrap Optional so User | None and Item | None resolve like the bare type.
     core = _unwrap_optional(raw)
     if isinstance(core, type) and registry.has(core):
         return "dependency", None, core
     if isinstance(core, type) and issubclass(core, Struct):
         return "body", None, None
-    if _is_query_compatible(raw):
+    bad = _bad_query_type(raw)
+    if bad is None:
         return "query", alias, None
-    raise ValueError(f"Unregistered dependency: {_unregistered_type(raw)!r}")
+    raise ValueError(f"Unregistered dependency: {bad!r}")
 
 
 def _is_list_type(annotation: Any) -> bool:
@@ -483,46 +484,30 @@ def _unwrap_optional(annotation: Any) -> Any:
     return annotation
 
 
-def _newtype_supertype(annotation: Any) -> Any | None:
-    # typing.NewType instances expose __supertype__ (Python 3.10+).
-    return getattr(annotation, "__supertype__", None)
-
-
-def _is_query_compatible(annotation: Any) -> bool:
+def _bad_query_type(annotation: Any) -> Any | None:
+    """Offending leaf if `annotation` can't be a path/query/header value; None if it can."""
     annotation = _unwrap_optional(annotation)
-    super_tp = _newtype_supertype(annotation)
-    if super_tp is not None:
-        return _is_query_compatible(super_tp)
+    if get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    supertype = getattr(annotation, "__supertype__", None)
+    if supertype is not None:
+        return annotation if _bad_query_type(supertype) is not None else None
     if annotation in _QUERY_SCALARS:
-        return True
+        return None
     if isinstance(annotation, type) and issubclass(annotation, Enum):
-        return True
+        return None
     origin = get_origin(annotation)
     if origin is Literal:
-        return True
+        return None
     if origin is list:
         args = get_args(annotation)
-        return bool(args) and _is_query_compatible(args[0])
-    if origin is Union or origin is UnionType:
-        return all(_is_query_compatible(a) for a in get_args(annotation) if a is not type(None))
-    return False
-
-
-def _unregistered_type(annotation: Any) -> Any:
-    """Pick a representative type for Unregistered dependency errors."""
-    annotation = _unwrap_optional(annotation)
-    super_tp = _newtype_supertype(annotation)
-    if super_tp is not None:
-        return annotation
-    origin = get_origin(annotation)
-    if origin is list:
-        args = get_args(annotation)
-        if args:
-            return _unregistered_type(args[0])
+        return annotation if not args else _bad_query_type(args[0])
     if origin is Union or origin is UnionType:
         for arg in get_args(annotation):
             if arg is type(None):
                 continue
-            if not _is_query_compatible(arg):
-                return _unregistered_type(arg)
+            bad = _bad_query_type(arg)
+            if bad is not None:
+                return bad
+        return None
     return annotation
