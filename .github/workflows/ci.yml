@@ -45,7 +45,7 @@ jobs:
           {
             echo "## Coverage (Python ${{ matrix.python-version }})"
             echo '```'
-            uv run pytest --cov=laminite --cov-report=term-missing
+            uv run pytest --cov --cov-report=term-missing
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
