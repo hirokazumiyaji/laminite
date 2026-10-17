@@ -140,6 +140,7 @@ class Laminite:
         offload: bool,
         max_body_size: int | None,
     ) -> None:
+        self._ensure_mutable()
         info = RouteInfo(
             path=path,
             methods=tuple(m.upper() for m in methods),

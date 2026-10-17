@@ -214,3 +214,36 @@ def test_join_paths_validation() -> None:
         join_paths("v1", "/a")
     with pytest.raises(ValueError):
         join_paths("/v1", "a")
+
+
+def test_self_include_cycle_raises() -> None:
+    router = APIRouter()
+    router.include_router(router)
+
+    app = Laminite()
+    with pytest.raises(ValueError, match="Cyclic router include"):
+        app.include_router(router)
+
+
+def test_mutual_include_cycle_raises() -> None:
+    first = APIRouter()
+    second = APIRouter()
+    first.include_router(second)
+    second.include_router(first)
+
+    app = Laminite()
+    with pytest.raises(ValueError, match="Cyclic router include"):
+        app.include_router(first)
+
+
+def test_frozen_app_rejects_before_path_validation() -> None:
+    app = Laminite()
+    client = TestClient(app)
+    client.get("/")
+    client.close()
+
+    with pytest.raises(RuntimeError, match="frozen"):
+
+        @app.get("/items//x")
+        def bad() -> dict[str, str]:
+            return {}

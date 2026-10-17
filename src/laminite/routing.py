@@ -115,8 +115,14 @@ class APIRouter:
         _validate_prefix(prefix)
         self._includes.append(_PendingInclude(router=router, prefix=prefix))
 
-    def iter_route_infos(self, *, prefix: str = "") -> Iterator[RouteInfo]:
+    def iter_route_infos(
+        self, *, prefix: str = "", _seen: frozenset[int] | None = None
+    ) -> Iterator[RouteInfo]:
         """Yield flattened RouteInfo values with prefixes applied."""
+        seen = frozenset() if _seen is None else _seen
+        if id(self) in seen:
+            raise ValueError("Cyclic router include detected")
+        seen = seen | {id(self)}
         base = join_paths(prefix, self.prefix) if self.prefix else prefix
         for pending in self._routes:
             path = join_paths(base, pending.path) if base else pending.path
@@ -130,4 +136,4 @@ class APIRouter:
             )
         for included in self._includes:
             child_base = join_paths(base, included.prefix) if included.prefix else base
-            yield from included.router.iter_route_infos(prefix=child_base)
+            yield from included.router.iter_route_infos(prefix=child_base, _seen=seen)
