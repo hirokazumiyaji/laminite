@@ -7,7 +7,9 @@ from collections.abc import Callable
 from typing import Any
 
 from opentelemetry import trace
-from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
+from opentelemetry.instrumentation.asgi import (  # pyright: ignore[reportMissingTypeStubs]
+    OpenTelemetryMiddleware,
+)
 from opentelemetry.trace import Status, StatusCode
 
 from laminite.app import Laminite

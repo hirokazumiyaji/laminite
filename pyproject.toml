@@ -79,7 +79,7 @@ select = [
 known-first-party = ["laminite", "laminite_opentelemetry"]
 
 [tool.pyright]
-include = ["src"]
+include = ["src", "packages/laminite-opentelemetry/src"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 venvPath = "."
