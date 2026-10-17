@@ -41,4 +41,4 @@ def on_missing(request: Request, exc: UserNotFound) -> JSONResponse:
     return JSONResponse({"detail": "user not found"}, status_code=404)
 ```
 
-Handlers match by MRO. They cover exceptions from handlers and providers.
+Handlers match by MRO. They cover exceptions from handlers and providers, including `HTTPException` raised while reading the request body (for example 413 when `max_body_size` is exceeded).

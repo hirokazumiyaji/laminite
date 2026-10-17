@@ -105,7 +105,8 @@ class Laminite:
             path_param_names=path_parameter_names(path),
         )
         self._routes.append(info)
-        # Placeholder value; replaced at freeze with pipeline.
+        # Registration-time validation only (duplicate routes, param-name
+        # conflicts); dispatch uses the frozen table built in _build_http_asgi.
         for method in methods_t:
             self._router.add(path, method, info)
 
@@ -134,6 +135,11 @@ class Laminite:
         return self._frozen
 
     def set_overrides(self, overrides: Mapping[type, Any] | None) -> None:
+        """Store overrides applied on the next ``freeze`` (pre-freeze only).
+
+        Prefer ``TestClient(..., overrides=...)`` / ``http_with_overrides`` so
+        overrides do not rewrite the base registry or leak across tests.
+        """
         if self._frozen:
             raise RuntimeError("Application is frozen; cannot set overrides")
         self._overrides = overrides
@@ -143,43 +149,86 @@ class Laminite:
             return
         if overrides is not None:
             self._overrides = overrides
-        # Replace the registry so compilation and any later lookups share overrides.
-        self._registry = self._registry.with_overrides(self._overrides)
+        # Build the primary ASGI app from an override-applied registry while
+        # keeping the base registry intact so http_with_overrides can diverge per client.
+        self._http = self._build_http_asgi(self._registry.with_overrides(self._overrides))
+        self._frozen = True
+
+    def _merge_unresolvable_overrides(self, overrides: Mapping[type, Any] | None) -> None:
+        """Fold override types the base registry cannot resolve into ``_overrides``.
+
+        Freeze-time dependency analysis must recognize types that only a
+        TestClient's overrides supply, or route compilation fails with
+        ``Unregistered dependency``. Registered types stay per-client via
+        ``http_with_overrides``; only unresolvable types are folded into the
+        shared app, because no other binding exists for them at freeze time.
+        """
+        if self._frozen or not overrides:
+            return
+        current = dict(self._overrides or {})
+        changed = False
+        for tp, instance in overrides.items():
+            if tp not in current and not self._registry.has(tp):
+                current[tp] = instance
+                changed = True
+        if changed:
+            self._overrides = current
+
+    def http_with_overrides(self, overrides: Mapping[type, Any]) -> ASGIApp:
+        """Return an HTTP ASGI app with dependency overrides.
+
+        The base registry is left untouched; only override types with no
+        binding at all are folded into a first freeze (see
+        ``_merge_unresolvable_overrides``).
+        """
+        if not self._frozen:
+            self._merge_unresolvable_overrides(overrides)
+            self.freeze()
+        return self._build_http_asgi(
+            self._registry.with_overrides(self._overrides).with_overrides(overrides)
+        )
+
+    def _build_http_asgi(self, registry: DependencyRegistry) -> ASGIApp:
         pipelines: dict[int, Any] = {}
-        new_router: Router[Any] = Router()
+        router: Router[Any] = Router()
         for info in self._routes:
             key = id(info)
             if key not in pipelines:
                 pipelines[key] = compile_route(
                     info,
-                    self._registry,
+                    registry,
                     max_body_size=self._max_body_size,
                 )
             pipeline = pipelines[key]
             for method in info.methods:
-                new_router.add(info.path, method, pipeline)
-        self._router = new_router
+                router.add(info.path, method, pipeline)
 
         async def dispatcher(scope: dict[str, Any], receive: Any, send: Any) -> None:
-            await self._dispatch(scope, receive, send)
+            await self._dispatch(scope, receive, send, router, self._exception_handlers)
 
         app: ASGIApp = dispatcher
         for cls, options in reversed(self._middleware):
             app = cls(app, **options)
-        self._http = app
-        self._frozen = True
+        return app
 
     async def _http_before_freeze(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         self.freeze(overrides=self._overrides)
         await self._http(scope, receive, send)
 
-    async def _dispatch(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+    async def _dispatch(
+        self,
+        scope: dict[str, Any],
+        receive: Any,
+        send: Any,
+        router: Router[Any],
+        exception_handlers: Mapping[type, Callable[..., Any]],
+    ) -> None:
         if "state" not in scope:
             scope["state"] = {}
         method = scope["method"]
         path = scope["path"]
         try:
-            match: Match[Any] = self._router.resolve(method, path)
+            match: Match[Any] = router.resolve(method, path)
         except NotFound:
             status, headers, body = error_json("Not Found", 404)
             await send_response(
@@ -202,7 +251,7 @@ class Laminite:
             send,
             path_params=match.path_params,
             is_head=match.is_head or method == "HEAD",
-            exception_handlers=self._exception_handlers,
+            exception_handlers=exception_handlers,
         )
 
     async def _lifespan(self, receive: Any, send: Any) -> None:
