@@ -2,60 +2,57 @@
 
 from __future__ import annotations
 
-import re
-from collections.abc import Callable
-from typing import Any, get_args, get_origin, get_type_hints
+from typing import Any, get_type_hints
 
 import msgspec
-from msgspec import Struct
 
 from laminite.compiler import CompiledRoute, RouteInfo
-from laminite.response import JSONResponse, Response
+from laminite.response import Response
 
-_PATH_PARAM_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?::path)?\}")
 _REF_TEMPLATE = "#/components/schemas/{name}"
 
 
-def openapi_path(path: str) -> str:
-    """Convert a Laminite path template to an OpenAPI path template."""
-    return _PATH_PARAM_RE.sub(r"{\1}", path)
-
-
 def _annotation_schema(annotation: Any, components: dict[str, Any]) -> dict[str, Any]:
-    origin = get_origin(annotation)
-    if origin is list:
-        args = get_args(annotation)
-        item = args[0] if args else Any
-        return {"type": "array", "items": _annotation_schema(item, components)}
     if annotation is Any or annotation is object:
         return {}
-    if isinstance(annotation, type) and issubclass(annotation, Struct):
-        schemas, comps = msgspec.json.schema_components(
-            [annotation], ref_template=_REF_TEMPLATE
-        )
-        components.update(comps)
-        return schemas[0]
     try:
-        schema = msgspec.json.schema(annotation)
+        schemas, comps = msgspec.json.schema_components([annotation], ref_template=_REF_TEMPLATE)
     except (TypeError, ValueError):
         return {"type": "string"}
-    # Inline $defs from single-type schema into components when present.
-    defs = schema.pop("$defs", None)
-    if isinstance(defs, dict):
-        for name, defn in defs.items():
-            components.setdefault(name, defn)
-        if "$ref" in schema:
-            ref_name = schema["$ref"].rsplit("/", 1)[-1]
-            schema = {"$ref": _REF_TEMPLATE.format(name=ref_name)}
-    return schema  # type: ignore[no-any-return]
+    components.update(comps)
+    return schemas[0]
 
 
-def _response_status(info: RouteInfo, return_annotation: Any) -> str:
-    if info.status_code is not None:
-        return str(info.status_code)
-    if return_annotation is type(None) or return_annotation is None:
-        return "204"
-    return "200"
+def _response_spec(
+    info: RouteInfo,
+    return_annotation: Any,
+    components: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    is_none = return_annotation is type(None)
+    status = (
+        str(info.status_code) if info.status_code is not None else ("204" if is_none else "200")
+    )
+
+    if is_none:
+        description = "No Content" if status == "204" else "Successful Response"
+        return status, {"description": description}
+    if isinstance(return_annotation, type) and issubclass(return_annotation, Response):
+        return status, {"description": "Successful Response"}
+    if return_annotation is str:
+        content = {"text/plain": {"schema": {"type": "string"}}}
+    elif return_annotation is bytes:
+        content = {
+            "application/octet-stream": {
+                "schema": {"type": "string", "format": "binary"},
+            },
+        }
+    else:
+        content = {
+            "application/json": {
+                "schema": _annotation_schema(return_annotation, components),
+            },
+        }
+    return status, {"description": "Successful Response", "content": content}
 
 
 def build_openapi(
@@ -69,108 +66,62 @@ def build_openapi(
     components: dict[str, Any] = {}
 
     for info, compiled in routes:
-        path_item = paths.setdefault(openapi_path(info.path), {})
+        path_item = paths.setdefault(info.path, {})
         hints = get_type_hints(info.handler, include_extras=True)
         return_annotation = hints.get("return", Any)
+        op_slug = info.path.replace("/", "_").replace("{", "").replace("}", "")
 
-        for method in info.methods:
-            op_path = openapi_path(info.path).replace("/", "_").replace("{", "").replace("}", "")
-            operation: dict[str, Any] = {
-                "operationId": f"{method.lower()}{op_path}_{info.handler.__name__}",
-                "parameters": [],
-                "responses": {},
-            }
-
-            seen_params: set[tuple[str, str]] = set()
-            path_bindings = {
-                b.name: b for b in compiled.bindings if b.source == "path"
-            }
-            # Always emit path params from the template so names match the path.
-            for path_name in sorted(info.path_param_names):
-                binding = path_bindings.get(path_name)
-                annotation = binding.annotation if binding is not None else str
-                key = (path_name, "path")
-                seen_params.add(key)
-                operation["parameters"].append(
-                    {
-                        "name": path_name,
-                        "in": "path",
-                        "required": True,
-                        "schema": _annotation_schema(annotation, components),
-                    }
-                )
-
-            for binding in compiled.bindings:
-                param_name: str | None = None
-                location: str | None = None
-                required = False
-                if binding.source == "query":
-                    param_name = binding.alias or binding.name
-                    location = "query"
-                    required = not binding.has_default
-                elif binding.source == "header":
-                    param_name = binding.alias or binding.name.replace("_", "-")
-                    location = "header"
-                    required = not binding.has_default
-                elif binding.source == "body" and binding.annotation is not None:
-                    operation["requestBody"] = {
-                        "required": not binding.has_default,
-                        "content": {
-                            "application/json": {
-                                "schema": _annotation_schema(binding.annotation, components),
-                            }
-                        },
-                    }
-                if param_name is None or location is None:
-                    continue
-                key = (param_name, location)
-                if key in seen_params:
-                    continue
-                seen_params.add(key)
-                operation["parameters"].append(
-                    {
-                        "name": param_name,
-                        "in": location,
-                        "required": required,
-                        "schema": _annotation_schema(binding.annotation, components),
-                    }
-                )
-
-            status = _response_status(info, return_annotation)
-            if return_annotation is type(None) or return_annotation is None:
-                description = "No Content" if status == "204" else "Successful Response"
-                operation["responses"][status] = {"description": description}
-            elif isinstance(return_annotation, type) and issubclass(
-                return_annotation, (Response, JSONResponse)
-            ):
-                # Runtime Response media type/body are not known at freeze time.
-                operation["responses"][status] = {"description": "Successful Response"}
-            elif return_annotation is str:
-                operation["responses"][status] = {
-                    "description": "Successful Response",
-                    "content": {
-                        "text/plain": {"schema": {"type": "string"}},
-                    },
+        path_bindings = {b.name: b for b in compiled.bindings if b.source == "path"}
+        parameters: list[dict[str, Any]] = []
+        for path_name in sorted(info.path_param_names):
+            parameters.append(
+                {
+                    "name": path_name,
+                    "in": "path",
+                    "required": True,
+                    "schema": _annotation_schema(path_bindings[path_name].annotation, components),
                 }
-            elif return_annotation is bytes:
-                operation["responses"][status] = {
-                    "description": "Successful Response",
-                    "content": {
-                        "application/octet-stream": {
-                            "schema": {"type": "string", "format": "binary"},
-                        },
-                    },
-                }
-            else:
-                operation["responses"][status] = {
-                    "description": "Successful Response",
+            )
+
+        request_body: dict[str, Any] | None = None
+        for binding in compiled.bindings:
+            if binding.source == "query":
+                param_name = binding.alias or binding.name
+                location = "query"
+            elif binding.source == "header":
+                param_name = binding.alias or binding.name.replace("_", "-")
+                location = "header"
+            elif binding.source == "body" and binding.annotation is not None:
+                request_body = {
+                    "required": not binding.has_default,
                     "content": {
                         "application/json": {
-                            "schema": _annotation_schema(return_annotation, components),
+                            "schema": _annotation_schema(binding.annotation, components),
                         }
                     },
                 }
+                continue
+            else:
+                continue
+            parameters.append(
+                {
+                    "name": param_name,
+                    "in": location,
+                    "required": not binding.has_default,
+                    "schema": _annotation_schema(binding.annotation, components),
+                }
+            )
 
+        status, response = _response_spec(info, return_annotation, components)
+
+        for method in info.methods:
+            operation: dict[str, Any] = {
+                "operationId": f"{method.lower()}{op_slug}_{info.handler.__name__}",
+                "parameters": parameters,
+                "responses": {status: response},
+            }
+            if request_body is not None:
+                operation["requestBody"] = request_body
             path_item[method.lower()] = operation
 
     doc: dict[str, Any] = {
@@ -185,13 +136,3 @@ def build_openapi(
 
 def encode_openapi(doc: dict[str, Any]) -> bytes:
     return msgspec.json.encode(doc)
-
-
-def make_openapi_handler(body: bytes) -> Callable[..., Any]:
-    """Return a sync handler that serves a pre-encoded OpenAPI document."""
-
-    def openapi() -> Response:
-        return Response(body, media_type="application/json")
-
-    openapi.__name__ = "openapi"
-    return openapi

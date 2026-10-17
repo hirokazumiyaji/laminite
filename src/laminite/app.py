@@ -10,8 +10,8 @@ from typing import Any, TypeVar
 from laminite.compiler import CompiledRoute, RouteInfo, analyze_handler, build_pipeline
 from laminite.di import DependencyRegistry
 from laminite.exceptions import HTTPException
-from laminite.openapi import build_openapi, encode_openapi, make_openapi_handler
-from laminite.response import error_json, send_response
+from laminite.openapi import build_openapi, encode_openapi
+from laminite.response import Response, error_json, send_response
 from laminite.router import Match, MethodNotAllowed, NotFound, Router, path_parameter_names
 from laminite.routing import APIRouter, _validate_prefix
 from laminite.types import ASGIApp, Receive, Scope, Send
@@ -218,9 +218,7 @@ class Laminite:
         if self._openapi is not None:
             return self._openapi
         registry = self._registry.with_overrides(self._overrides)
-        analyzed = [
-            (info, analyze_handler(info, registry)) for info in self._routes
-        ]
+        analyzed = [(info, analyze_handler(info, registry)) for info in self._routes]
         return build_openapi(analyzed, title=self.title, version=self.version)
 
     def freeze(self, *, overrides: Mapping[type, Any] | None = None) -> None:
@@ -291,10 +289,14 @@ class Laminite:
         self._openapi = build_openapi(analyzed, title=self.title, version=self.version)
         if self.openapi_url is not None:
             body = encode_openapi(self._openapi)
+
+            def openapi() -> Response:
+                return Response(body, media_type="application/json")
+
             openapi_info = RouteInfo(
                 path=self.openapi_url,
                 methods=("GET",),
-                handler=make_openapi_handler(body),
+                handler=openapi,
                 status_code=200,
                 offload=False,
                 path_param_names=frozenset(),

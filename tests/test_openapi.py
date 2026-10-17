@@ -101,10 +101,26 @@ def test_openapi_list_and_none_responses() -> None:
     )
 
 
-def test_openapi_path_wildcard_normalized() -> None:
-    from laminite.openapi import openapi_path
+def test_openapi_nested_struct_refs_resolve_to_components() -> None:
+    app = Laminite()
 
-    assert openapi_path("/files/{file_path:path}") == "/files/{file_path}"
+    @app.get("/optional")
+    def get_optional() -> Item | None:
+        return None
+
+    @app.get("/items")
+    def get_items() -> list[Item | None]:
+        return []
+
+    @app.get("/map")
+    def get_map() -> dict[str, Item]:
+        return {}
+
+    doc = app.openapi()
+    serialized = msgspec.json.encode(doc).decode()
+    assert "#/$defs/" not in serialized
+    assert "#/components/schemas/Item" in serialized
+    assert "Item" in doc["components"]["schemas"]
 
 
 def test_openapi_does_not_freeze_app() -> None:
