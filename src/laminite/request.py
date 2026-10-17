@@ -99,6 +99,7 @@ class Request:
     )
 
     ROUTE_SCOPE_KEY = "laminite.route"
+    BODY_SCOPE_KEY = "laminite.body"
 
     def __init__(
         self,
@@ -167,9 +168,18 @@ class Request:
 
     async def body(self) -> bytes:
         if self._body is None:
+            cached = self.scope.get(self.BODY_SCOPE_KEY)
+            if cached is not None:
+                self._body = cached
+                return cached  # type: ignore[no-any-return]
             _reject_oversized_content_length(self.scope.get("headers", []), self._max_body_size)
             self._body = await _receive_body(self._receive, self._max_body_size)
         return self._body
+
+    def _cache_body(self, body: bytes) -> None:
+        """Record a body already read by the request pipeline."""
+        self._body = body
+        self.scope[self.BODY_SCOPE_KEY] = body
 
     async def json(self, tp: type[T] | Any = Any) -> T:
         data = await self.body()
@@ -181,24 +191,32 @@ class Request:
 _CONTENT_LENGTH_RE = re.compile(r"^[0-9]+$")
 
 
+def inspect_body_headers(headers: Sequence[tuple[bytes, bytes]], max_body_size: int) -> str | None:
+    """Return Content-Type while validating Content-Length in one pass."""
+    from laminite.exceptions import HTTPException
+
+    content_type: str | None = None
+    seen: int | None = None
+    for key, value in headers:
+        if key == b"content-length":
+            raw = value.decode("latin-1").strip()
+            if not _CONTENT_LENGTH_RE.fullmatch(raw):
+                raise HTTPException(400, "Invalid Content-Length")
+            length = int(raw)
+            if seen is not None and length != seen:
+                raise HTTPException(400, "Invalid Content-Length")
+            seen = length
+        elif key == b"content-type":
+            content_type = value.decode("latin-1")
+    if seen is not None and seen > max_body_size:
+        raise HTTPException(413, "Payload Too Large")
+    return content_type
+
+
 def _reject_oversized_content_length(
     headers: Sequence[tuple[bytes, bytes]], max_body_size: int
 ) -> None:
-    from laminite.exceptions import HTTPException
-
-    seen: int | None = None
-    for key, value in headers:
-        if key != b"content-length":
-            continue
-        raw = value.decode("latin-1").strip()
-        if not _CONTENT_LENGTH_RE.fullmatch(raw):
-            raise HTTPException(400, "Invalid Content-Length")
-        length = int(raw)
-        if seen is not None and length != seen:
-            raise HTTPException(400, "Invalid Content-Length")
-        seen = length
-    if seen is not None and seen > max_body_size:
-        raise HTTPException(413, "Payload Too Large")
+    inspect_body_headers(headers, max_body_size)
 
 
 def is_json_content_type(content_type: str | None) -> bool:

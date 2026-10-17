@@ -41,13 +41,15 @@ from laminite.params import Body, Cookie, Header, Query
 from laminite.request import (
     Request,
     _Disconnect,
+    _receive_body,
+    inspect_body_headers,
     is_json_content_type,
     parse_cookie_header,
     parse_query_pairs,
 )
 from laminite.response import (
     StreamingResponse,
-    encode_header_pair,
+    append_header,
     error_json,
     render_result,
     send_response,
@@ -111,7 +113,9 @@ class CompiledRoute:
     provided_arg_names: dict[str, type]
     app_values: dict[type[Any], Any] = field(default_factory=dict[type[Any], Any])
     kw_template: dict[str, Any] = field(default_factory=dict[str, Any])
+    path_binding_names: tuple[str, ...] = ()
     path_params_only: bool = False
+    path_params_fast: bool = False
     needs_exit_stack: bool = False
     bare_call: bool = False
 
@@ -225,12 +229,9 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
     request_providers = registry.resolve_order(dep_types)
 
     request_arg_names = tuple(b.name for b in bindings if b.source == "request")
-    # The body is always read through Request so handlers and providers share one cache.
-    needs_request = (
-        bool(request_arg_names)
-        or body_binding is not None
-        or any(p.needs_request for p in request_providers)
-    )
+    # Body routes without a Request argument/providers read the body directly,
+    # so they do not pay for Request/Headers construction on every request.
+    needs_request = bool(request_arg_names) or any(p.needs_request for p in request_providers)
 
     header_keys = {
         b.header_key: b.name for b in bindings if b.source == "header" and b.header_key is not None
@@ -255,8 +256,17 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
             else:
                 provided_arg_names[b.name] = b.dep_type
 
+    path_binding_names = tuple(b.name for b in bindings if b.source == "path")
     path_params_only = (
         params_type is not None and not needs_query and not needs_headers and not cookie_keys
+    )
+    path_params_fast = (
+        path_params_only
+        and not kw_template
+        and not provided_arg_names
+        and not request_arg_names
+        and not request_providers
+        and body_binding is None
     )
     needs_exit_stack = any(p.kind in {"sync_cm", "async_cm"} for p in request_providers)
     bare_call = (
@@ -289,7 +299,9 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
         provided_arg_names=provided_arg_names,
         app_values=app_values,
         kw_template=kw_template,
+        path_binding_names=path_binding_names,
         path_params_only=path_params_only,
+        path_params_fast=path_params_fast,
         needs_exit_stack=needs_exit_stack,
         bare_call=bare_call,
     )
@@ -313,7 +325,6 @@ def build_pipeline(
     needs_query = route.needs_query
     needs_headers = route.needs_headers
     needs_cookies = route.needs_cookies
-    bindings = route.bindings
     query_key_to_name = route.query_key_to_name
     list_query_names = route.list_query_names
     header_keys = route.header_keys
@@ -322,7 +333,9 @@ def build_pipeline(
     provided_arg_names = route.provided_arg_names
     app_values = route.app_values
     kw_template = route.kw_template
+    path_binding_names = route.path_binding_names
     path_params_only = route.path_params_only
+    path_params_fast = route.path_params_fast
     needs_exit_stack = route.needs_exit_stack
     bare_call = route.bare_call
     is_async = route.is_async
@@ -339,7 +352,7 @@ def build_pipeline(
         on_unhandled_exception: Callable[..., Any] | None,
     ) -> None:
         request: Request | None = None
-        kwargs: dict[str, Any] | None = None if bare_call else dict(kw_template)
+        kwargs: dict[str, Any] | None = None if bare_call or path_params_fast else dict(kw_template)
         scope[Request.ROUTE_SCOPE_KEY] = route_template
 
         try:
@@ -356,14 +369,12 @@ def build_pipeline(
                     kwargs[name] = request
 
             if params_type is not None:
-                assert kwargs is not None
                 if path_params_only:
                     values: Mapping[str, Any] = path_params
                 else:
                     collected: dict[str, Any] = {}
-                    for b in bindings:
-                        if b.source == "path":
-                            collected[b.name] = path_params[b.name]
+                    for name in path_binding_names:
+                        collected[name] = path_params[name]
                     if needs_query:
                         raw_q = parse_query_pairs(scope.get("query_string", b""), max_query_fields)
                         for key, value in raw_q:
@@ -392,19 +403,21 @@ def build_pipeline(
                     values = collected
 
                 try:
-                    converted: Mapping[str, Any] = msgspec.convert(
-                        values, params_type, strict=False
-                    )
+                    converted: dict[str, Any] = msgspec.convert(values, params_type, strict=False)
                 except msgspec.ValidationError as exc:
                     await _send_error(send, str(exc), 422, is_head)
                     return
-                kwargs.update(converted)
+                if path_params_fast:
+                    kwargs = converted
+                else:
+                    assert kwargs is not None
+                    kwargs.update(converted)
 
             if body_binding is not None and body_decoder is not None:
-                assert request is not None and kwargs is not None
-                # Validate Content-Type before consuming the body so a mismatched
-                # client never gets to transfer up to max_body_size bytes.
-                content_type = request.headers.get("content-type")
+                assert kwargs is not None
+                # Scan the raw headers once for both Content-Type and
+                # Content-Length, before consuming the body.
+                content_type = inspect_body_headers(scope.get("headers", []), max_body_size)
                 if (content_type is None and not body_binding.has_default) or (
                     content_type is not None and not is_json_content_type(content_type)
                 ):
@@ -412,7 +425,12 @@ def build_pipeline(
                     return
                 # Let HTTPException (e.g. 413) reach the outer handler path so
                 # @app.exception_handler(HTTPException) applies consistently.
-                raw = await request.body()
+                raw = await _receive_body(receive, max_body_size)
+                # Keep the body on the scope so a Request created later (for
+                # example by an exception handler) never re-reads the stream.
+                scope[Request.BODY_SCOPE_KEY] = raw
+                if request is not None:
+                    request._cache_body(raw)
                 if not raw and body_binding.has_default:
                     kwargs[body_binding.name] = body_binding.default
                 else:
@@ -580,7 +598,7 @@ async def _send_http_exception(send: Any, exc: HTTPException, is_head: bool) -> 
     status, headers, body = error_json(exc.detail, exc.status_code)
     if exc.headers:
         for key, value in exc.headers.items():
-            headers.append(encode_header_pair(key, value))
+            append_header(headers, key, value)
     await send_response(send, status_code=status, headers=headers, body=body, is_head=is_head)
 
 
