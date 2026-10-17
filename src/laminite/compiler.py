@@ -322,7 +322,9 @@ def build_pipeline(
                 # Validate Content-Type before consuming the body so a mismatched
                 # client never gets to transfer up to max_body_size bytes.
                 content_type = request.headers.get("content-type")
-                if content_type is not None and not is_json_content_type(content_type):
+                if (content_type is None and not body_binding.has_default) or (
+                    content_type is not None and not is_json_content_type(content_type)
+                ):
                     await _send_error(send, "Unsupported Media Type", 415, is_head)
                     return
                 # Let HTTPException (e.g. 413) reach the outer handler path so

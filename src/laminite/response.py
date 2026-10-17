@@ -179,7 +179,8 @@ async def send_response(
     body: bytes,
     is_head: bool,
 ) -> None:
-    header_list = list(headers)
+    # Framing is ours to set; a caller-supplied Content-Length could disagree with the body.
+    header_list = [pair for pair in headers if pair[0] != b"content-length"]
     header_list.append((b"content-length", str(len(body)).encode("latin-1")))
     await send(
         {

@@ -204,7 +204,8 @@ def test_json_body_requires_json_content_type() -> None:
     client.close()
 
 
-def test_bad_content_type_rejected_before_body_receive() -> None:
+@pytest.mark.parametrize("headers", [[(b"content-type", b"text/plain")], []])
+def test_bad_content_type_rejected_before_body_receive(headers: list[tuple[bytes, bytes]]) -> None:
     app = Laminite(max_body_size=10_000)
 
     @app.post("/items")
@@ -223,7 +224,7 @@ def test_bad_content_type_rejected_before_body_receive() -> None:
             "path": "/items",
             "raw_path": b"/items",
             "query_string": b"",
-            "headers": [(b"content-type", b"text/plain")],
+            "headers": headers,
             "client": ("test", 1),
             "server": ("test", 80),
             "state": {},
@@ -243,6 +244,50 @@ def test_bad_content_type_rejected_before_body_receive() -> None:
 
     assert asyncio.run(call()) == 415
     assert receive_calls["n"] == 0
+
+
+def test_caller_content_length_header_is_replaced() -> None:
+    app = Laminite()
+
+    @app.get("/")
+    async def index() -> Response:
+        return Response(b"hello", headers={"content-length": "999"})
+
+    @app.get("/err")
+    async def err() -> None:
+        raise HTTPException(400, "bad", headers={"Content-Length": "999"})
+
+    async def lengths(path: str) -> list[bytes]:
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [],
+            "client": ("test", 1),
+            "server": ("test", 80),
+            "state": {},
+        }
+
+        async def receive() -> dict:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        messages: list[dict] = []
+
+        async def send(message: dict) -> None:
+            messages.append(message)
+
+        await app(scope, receive, send)
+        start = next(m for m in messages if m["type"] == "http.response.start")
+        return [v for k, v in start["headers"] if k == b"content-length"]
+
+    assert asyncio.run(lengths("/")) == [b"5"]
+    assert len(asyncio.run(lengths("/err"))) == 1
+    assert asyncio.run(lengths("/err")) != [b"999"]
 
 
 def test_route_max_body_size_override() -> None:
