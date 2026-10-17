@@ -54,6 +54,8 @@ _QUERY_SCALARS: frozenset[type] = frozenset(
 
 logger = logging.getLogger("laminite")
 
+ArgSource = Literal["path", "query", "header", "body", "request", "dependency"]
+
 
 @dataclass(slots=True)
 class RouteInfo:
@@ -69,7 +71,7 @@ class RouteInfo:
 @dataclass(slots=True)
 class ArgBinding:
     name: str
-    source: str  # path | query | header | body | request | dependency
+    source: ArgSource
     annotation: Any
     default: Any
     has_default: bool
@@ -86,7 +88,7 @@ class CompiledRoute:
     offload: bool
     status_code: int | None
     bindings: list[ArgBinding]
-    params_type: type | None
+    params_type: type[Any] | None
     query_key_to_name: dict[str, str]  # wire key -> arg name
     list_query_names: frozenset[str]  # arg names that collect lists
     header_keys: dict[bytes, str]  # header bytes -> arg name
@@ -98,8 +100,8 @@ class CompiledRoute:
     needs_headers: bool
     request_providers: list[ProviderSpec]
     provided_arg_names: dict[str, type]
-    app_values: dict[type[Any], Any] = field(default_factory=dict)
-    kw_template: dict[str, Any] = field(default_factory=dict)
+    app_values: dict[type[Any], Any] = field(default_factory=dict[type[Any], Any])
+    kw_template: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 def compile_route(
@@ -187,7 +189,7 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
         else:
             td_fields[b.name] = Required[ann]  # type: ignore[valid-type]
 
-    params_type: type | None = None
+    params_type: type[Any] | None = None
     if td_fields:
         params_type = TypedDict(  # type: ignore[misc, valid-type]
             f"_Params_{handler.__name__}_{id(handler)}",
@@ -311,11 +313,13 @@ def build_pipeline(
                             values[name] = value.decode("latin-1")
 
                 try:
-                    converted = msgspec.convert(values, params_type, strict=False)
+                    converted: Mapping[str, Any] = msgspec.convert(
+                        values, params_type, strict=False
+                    )
                 except msgspec.ValidationError as exc:
                     await _send_error(send, str(exc), 422, is_head)
                     return
-                kwargs.update(converted)  # type: ignore[arg-type]
+                kwargs.update(converted)
 
             if body_binding is not None and body_decoder is not None:
                 assert request is not None
@@ -505,7 +509,7 @@ def _resolve_source(
     annotation: Any,
     path_params: frozenset[str],
     registry: DependencyRegistry,
-) -> tuple[str, str | None, type | None]:
+) -> tuple[ArgSource, str | None, type | None]:
     if name in path_params:
         return "path", None, None
 
@@ -513,7 +517,7 @@ def _resolve_source(
     # `Annotated[X, Marker]` take the same classification path.
     raw = _unwrap_optional(annotation)
     alias: str | None = None
-    marker_source: str | None = None
+    marker_source: ArgSource | None = None
     if get_origin(raw) is Annotated:
         args = get_args(raw)
         raw = args[0]

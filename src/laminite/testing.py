@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 import msgspec
 
 from laminite.app import Laminite
+from laminite.types import Message
 
 T = TypeVar("T")
 
@@ -43,8 +44,8 @@ class TestClient:
         self.overrides = overrides
         self._runner = asyncio.Runner()
         self._lifespan_task: asyncio.Task[None] | None = None
-        self._receive_q: asyncio.Queue[dict[str, Any]] | None = None
-        self._send_q: asyncio.Queue[dict[str, Any]] | None = None
+        self._receive_q: asyncio.Queue[Message] | None = None
+        self._send_q: asyncio.Queue[Message] | None = None
         self._entered = False
         self._http_app: Any | None = None
 
@@ -63,10 +64,10 @@ class TestClient:
             receive_q = self._receive_q
             send_q = self._send_q
 
-            async def receive() -> dict[str, Any]:
+            async def receive() -> Message:
                 return await receive_q.get()
 
-            async def send(message: dict[str, Any]) -> None:
+            async def send(message: Message) -> None:
                 await send_q.put(message)
 
             # Lifespan freezes the shared app without baking overrides into it.
@@ -176,17 +177,17 @@ class TestClient:
             "state": {},
         }
 
-        messages: list[dict[str, Any]] = []
+        messages: list[Message] = []
         body_sent = False
 
-        async def receive() -> dict[str, Any]:
+        async def receive() -> Message:
             nonlocal body_sent
             if not body_sent:
                 body_sent = True
                 return {"type": "http.request", "body": body, "more_body": False}
             return {"type": "http.disconnect"}
 
-        async def send(message: dict[str, Any]) -> None:
+        async def send(message: Message) -> None:
             messages.append(message)
 
         await self._resolve_http_app()(scope, receive, send)

@@ -57,12 +57,12 @@ class Router[V]:
             static_added = True
 
         try:
-            node = self._root
+            node: _Node[V] = self._root
             for segment, is_param, name in segments:
                 if is_param:
                     assert name is not None
                     if node.param is None:
-                        node.param = _Node()
+                        node.param = _Node[V]()
                         node.param_name = name
                     elif node.param_name != name:
                         raise ValueError(
@@ -73,7 +73,7 @@ class Router[V]:
                 else:
                     child = node.static.get(segment)
                     if child is None:
-                        child = _Node()
+                        child = _Node[V]()
                         node.static[segment] = child
                     node = child
 

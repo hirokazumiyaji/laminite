@@ -77,7 +77,6 @@ venvPath = "."
 venv = ".venv"
 reportPrivateUsage = false
 reportUnknownVariableType = false
-reportUnknownMemberType = false
 reportUnknownArgumentType = false
 
 [tool.pytest.ini_options]
@@ -91,3 +90,4 @@ branch = true
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+fail_under = 90
