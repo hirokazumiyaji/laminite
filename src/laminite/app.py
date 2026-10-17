@@ -270,7 +270,6 @@ class Laminite:
         router: Router[Any],
         exception_handlers: Mapping[type, Callable[..., Any]],
     ) -> None:
-        # scope["state"] is created lazily by Request.state when needed.
         method = scope["method"]
         path = scope["path"]
         try:
