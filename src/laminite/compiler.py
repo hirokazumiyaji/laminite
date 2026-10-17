@@ -336,7 +336,7 @@ def build_pipeline(
         path_params: Mapping[str, str],
         is_head: bool,
         exception_handlers: Mapping[type, Callable[..., Any]],
-        on_unhandled_exception: Callable[..., Any] | None = None,
+        on_unhandled_exception: Callable[..., Any] | None,
     ) -> None:
         request: Request | None = None
         kwargs: dict[str, Any] | None = None if bare_call else dict(kw_template)
@@ -594,12 +594,16 @@ def _find_exception_handler(
     return None
 
 
+async def _maybe_await(result: Any) -> Any:
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
 async def _run_exception_handler(
     handler: Callable[..., Any], request: Request, exc: BaseException
 ) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
-    result = handler(request, exc)
-    if inspect.isawaitable(result):
-        result = await result
+    result = await _maybe_await(handler(request, exc))
     return render_result(result, status_code=200)
 
 
@@ -611,9 +615,7 @@ async def _invoke_unhandled_hook(
     if hook is None:
         return
     try:
-        result = hook(request, exc)
-        if inspect.isawaitable(result):
-            await result
+        await _maybe_await(hook(request, exc))
     except Exception:
         logger.exception("on_unhandled_exception hook failed")
 

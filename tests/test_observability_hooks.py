@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from laminite import HTTPException, Laminite, Request
-from laminite.request import Request as RequestCls
 from laminite.testing import TestClient
 
 
@@ -24,7 +23,7 @@ def test_request_route_template_on_match() -> None:
 
 
 def test_scope_route_visible_to_middleware_after_handler() -> None:
-    captured: list[str | None] = []
+    captured: list[tuple[bool, str | None]] = []
 
     class Capture:
         def __init__(self, app):  # type: ignore[no-untyped-def]
@@ -33,7 +32,8 @@ def test_scope_route_visible_to_middleware_after_handler() -> None:
         async def __call__(self, scope, receive, send):  # type: ignore[no-untyped-def]
             await self.app(scope, receive, send)
             if scope["type"] == "http":
-                captured.append(scope.get(RequestCls.ROUTE_SCOPE_KEY))
+                key = Request.ROUTE_SCOPE_KEY
+                captured.append((key in scope, scope.get(key)))
 
     app = Laminite()
     app.add_middleware(Capture)
@@ -46,8 +46,8 @@ def test_scope_route_visible_to_middleware_after_handler() -> None:
     client.get("/x/a")
     client.get("/missing")
     client.close()
-    assert captured[0] == "/x/{name}"
-    assert captured[1] is None  # 404: no template
+    assert captured[0] == (True, "/x/{name}")
+    assert captured[1] == (False, None)
 
 
 def test_405_does_not_set_route_template() -> None:
@@ -64,7 +64,7 @@ def test_405_does_not_set_route_template() -> None:
         async def __call__(self, scope, receive, send):  # type: ignore[no-untyped-def]
             await self.app(scope, receive, send)
             if scope["type"] == "http":
-                assert RequestCls.ROUTE_SCOPE_KEY not in scope
+                assert Request.ROUTE_SCOPE_KEY not in scope
 
     app.add_middleware(Capture)
     client = TestClient(app)
@@ -73,9 +73,30 @@ def test_405_does_not_set_route_template() -> None:
 
 
 def test_on_unhandled_exception_hook() -> None:
-    seen: list[BaseException] = []
+    seen: list[tuple[str | None, BaseException]] = []
 
     def on_exc(request: Request, exc: BaseException) -> None:
+        seen.append((request.route, exc))
+
+    app = Laminite(on_unhandled_exception=on_exc)
+
+    @app.get("/boom")
+    def boom() -> None:
+        raise RuntimeError("fail")
+
+    client = TestClient(app)
+    assert client.get("/boom").status_code == 500
+    assert len(seen) == 1
+    route, exc = seen[0]
+    assert route == "/boom"
+    assert isinstance(exc, RuntimeError)
+    client.close()
+
+
+def test_on_unhandled_exception_async_hook() -> None:
+    seen: list[BaseException] = []
+
+    async def on_exc(request: Request, exc: BaseException) -> None:
         seen.append(exc)
 
     app = Laminite(on_unhandled_exception=on_exc)
@@ -129,7 +150,10 @@ def test_handled_exception_does_not_trigger_hook() -> None:
 
 
 def test_hook_failure_still_returns_500() -> None:
+    invoked: list[bool] = []
+
     def bad_hook(request: Request, exc: BaseException) -> None:
+        invoked.append(True)
         raise RuntimeError("hook failed")
 
     app = Laminite(on_unhandled_exception=bad_hook)
@@ -140,6 +164,7 @@ def test_hook_failure_still_returns_500() -> None:
 
     client = TestClient(app)
     assert client.get("/boom").status_code == 500
+    assert invoked == [True]
     client.close()
 
 
