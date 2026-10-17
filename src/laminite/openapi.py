@@ -8,7 +8,7 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 import msgspec
 
 from laminite.compiler import CompiledRoute, RouteInfo
-from laminite.response import JSONResponse, Response
+from laminite.response import JSONResponse, Response, StreamingResponse
 
 _REF_TEMPLATE = "#/components/schemas/{name}"
 
@@ -52,14 +52,14 @@ def _response_spec(
     if is_none:
         description = "No Content" if status == "204" else "Successful Response"
         return status, {"description": description}
-    if isinstance(return_annotation, type) and issubclass(return_annotation, Response):
-        media_type = "application/json" if issubclass(return_annotation, JSONResponse) else "*/*"
+    base = _unwrap_optional(return_annotation)
+    if isinstance(base, type) and issubclass(base, (Response, StreamingResponse)):
+        media_type = "application/json" if issubclass(base, JSONResponse) else "*/*"
         # The returned instance carries status and body, so no single status code applies.
         return "default", {
             "description": "Response",
             "content": {media_type: {"schema": {}}},
         }
-    base = _unwrap_optional(return_annotation)
     if base is str:
         content = {"text/plain": {"schema": {"type": "string"}}}
     elif base is bytes:
@@ -114,6 +114,9 @@ def build_openapi(
             elif binding.source == "header":
                 param_name = binding.alias or binding.name.replace("_", "-")
                 location = "header"
+            elif binding.source == "cookie":
+                param_name = binding.alias or binding.name
+                location = "cookie"
             elif binding.source == "body" and binding.annotation is not None:
                 request_body = {
                     "required": not binding.has_default,

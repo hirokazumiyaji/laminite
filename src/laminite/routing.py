@@ -45,6 +45,7 @@ class _PendingRoute:
     handler: Callable[..., Any]
     status_code: int | None
     offload: bool
+    max_body_size: int | None
 
 
 @dataclass(slots=True)
@@ -69,6 +70,7 @@ class APIRouter:
         *,
         status_code: int | None = None,
         offload: bool = False,
+        max_body_size: int | None = None,
     ) -> Callable[[F], F]:
         def decorator(func: F) -> F:
             if not path.startswith("/"):
@@ -80,6 +82,7 @@ class APIRouter:
                     handler=func,
                     status_code=status_code,
                     offload=offload,
+                    max_body_size=max_body_size,
                 )
             )
             return func
@@ -87,29 +90,84 @@ class APIRouter:
         return decorator
 
     def get(
-        self, path: str, *, status_code: int | None = None, offload: bool = False
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        offload: bool = False,
+        max_body_size: int | None = None,
     ) -> Callable[[F], F]:
-        return self.route(path, ["GET"], status_code=status_code, offload=offload)
+        return self.route(
+            path,
+            ["GET"],
+            status_code=status_code,
+            offload=offload,
+            max_body_size=max_body_size,
+        )
 
     def post(
-        self, path: str, *, status_code: int | None = None, offload: bool = False
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        offload: bool = False,
+        max_body_size: int | None = None,
     ) -> Callable[[F], F]:
-        return self.route(path, ["POST"], status_code=status_code, offload=offload)
+        return self.route(
+            path,
+            ["POST"],
+            status_code=status_code,
+            offload=offload,
+            max_body_size=max_body_size,
+        )
 
     def put(
-        self, path: str, *, status_code: int | None = None, offload: bool = False
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        offload: bool = False,
+        max_body_size: int | None = None,
     ) -> Callable[[F], F]:
-        return self.route(path, ["PUT"], status_code=status_code, offload=offload)
+        return self.route(
+            path,
+            ["PUT"],
+            status_code=status_code,
+            offload=offload,
+            max_body_size=max_body_size,
+        )
 
     def patch(
-        self, path: str, *, status_code: int | None = None, offload: bool = False
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        offload: bool = False,
+        max_body_size: int | None = None,
     ) -> Callable[[F], F]:
-        return self.route(path, ["PATCH"], status_code=status_code, offload=offload)
+        return self.route(
+            path,
+            ["PATCH"],
+            status_code=status_code,
+            offload=offload,
+            max_body_size=max_body_size,
+        )
 
     def delete(
-        self, path: str, *, status_code: int | None = None, offload: bool = False
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        offload: bool = False,
+        max_body_size: int | None = None,
     ) -> Callable[[F], F]:
-        return self.route(path, ["DELETE"], status_code=status_code, offload=offload)
+        return self.route(
+            path,
+            ["DELETE"],
+            status_code=status_code,
+            offload=offload,
+            max_body_size=max_body_size,
+        )
 
     def include_router(self, router: APIRouter, *, prefix: str = "") -> None:
         _validate_prefix(prefix)
@@ -133,6 +191,7 @@ class APIRouter:
                 status_code=pending.status_code,
                 offload=pending.offload,
                 path_param_names=path_parameter_names(path),
+                max_body_size=pending.max_body_size,
             )
         for included in self._includes:
             child_base = join_paths(base, included.prefix) if included.prefix else base

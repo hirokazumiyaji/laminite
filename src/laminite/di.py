@@ -19,7 +19,7 @@ from typing import (
     get_type_hints,
 )
 
-from laminite.params import Body, Header, Query
+from laminite.params import Body, Cookie, Header, Query
 from laminite.request import Request
 
 T = TypeVar("T")
@@ -158,7 +158,7 @@ def strip_annotated(ann: Any) -> Any:
 
 
 def strip_param_markers(ann: Any) -> Any:
-    """Remove Laminite Query/Header/Body markers; keep msgspec.Meta and other metadata."""
+    """Remove Laminite Query/Header/Cookie/Body markers; keep other metadata."""
     origin = get_origin(ann)
     if origin is Union or origin is UnionType:
         args = get_args(ann)
@@ -169,7 +169,7 @@ def strip_param_markers(ann: Any) -> Any:
         return ann
     args = get_args(ann)
     base = args[0]
-    kept = tuple(m for m in args[1:] if not isinstance(m, (Query, Header, Body)))
+    kept = tuple(m for m in args[1:] if not isinstance(m, (Query, Header, Cookie, Body)))
     if not kept:
         return base
     return Annotated[base, *kept]
