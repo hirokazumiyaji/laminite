@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Any, get_type_hints
+from types import UnionType
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 import msgspec
 
 from laminite.compiler import CompiledRoute, RouteInfo
-from laminite.response import Response
+from laminite.response import JSONResponse, Response
 
 _REF_TEMPLATE = "#/components/schemas/{name}"
+
+
+def _unwrap_optional(annotation: Any) -> Any:
+    origin = get_origin(annotation)
+    if origin is Union or origin is UnionType:
+        args = [a for a in get_args(annotation) if a is not type(None)]
+        if len(args) == 1:
+            return args[0]
+    return annotation
 
 
 def _annotation_schema(annotation: Any, components: dict[str, Any]) -> dict[str, Any]:
@@ -19,6 +29,12 @@ def _annotation_schema(annotation: Any, components: dict[str, Any]) -> dict[str,
         schemas, comps = msgspec.json.schema_components([annotation], ref_template=_REF_TEMPLATE)
     except (TypeError, ValueError):
         return {"type": "string"}
+    for name, schema in comps.items():
+        existing = components.get(name)
+        if existing is not None and existing != schema:
+            raise ValueError(
+                f"Conflicting OpenAPI schema component {name!r}; rename one of the colliding types"
+            )
     components.update(comps)
     return schemas[0]
 
@@ -37,10 +53,16 @@ def _response_spec(
         description = "No Content" if status == "204" else "Successful Response"
         return status, {"description": description}
     if isinstance(return_annotation, type) and issubclass(return_annotation, Response):
-        return status, {"description": "Successful Response"}
-    if return_annotation is str:
+        media_type = "application/json" if issubclass(return_annotation, JSONResponse) else "*/*"
+        # The returned instance carries status and body, so no single status code applies.
+        return "default", {
+            "description": "Response",
+            "content": {media_type: {"schema": {}}},
+        }
+    base = _unwrap_optional(return_annotation)
+    if base is str:
         content = {"text/plain": {"schema": {"type": "string"}}}
-    elif return_annotation is bytes:
+    elif base is bytes:
         content = {
             "application/octet-stream": {
                 "schema": {"type": "string", "format": "binary"},
@@ -64,6 +86,7 @@ def build_openapi(
     """Build an OpenAPI 3.1 document from freeze-time route analysis."""
     paths: dict[str, Any] = {}
     components: dict[str, Any] = {}
+    used_operation_ids: set[str] = set()
 
     for info, compiled in routes:
         path_item = paths.setdefault(info.path, {})
@@ -115,8 +138,15 @@ def build_openapi(
         status, response = _response_spec(info, return_annotation, components)
 
         for method in info.methods:
+            base_op_id = f"{method.lower()}{op_slug}_{info.handler.__name__}"
+            operation_id = base_op_id
+            suffix = 2
+            while operation_id in used_operation_ids:
+                operation_id = f"{base_op_id}_{suffix}"
+                suffix += 1
+            used_operation_ids.add(operation_id)
             operation: dict[str, Any] = {
-                "operationId": f"{method.lower()}{op_slug}_{info.handler.__name__}",
+                "operationId": operation_id,
                 "parameters": parameters,
                 "responses": {status: response},
             }

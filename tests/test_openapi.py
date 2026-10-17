@@ -5,15 +5,22 @@ from __future__ import annotations
 from typing import Annotated
 
 import msgspec
+import pytest
 from msgspec import Struct
 
-from laminite import Header, Laminite, Query
+from laminite import Header, JSONResponse, Laminite, Query, Response
 from laminite.testing import TestClient
 
 
 class Item(Struct):
     name: str
     qty: int = 1
+
+
+# Two distinct types sharing the short name "Item" (msgspec names components
+# after __name__), used to exercise component-name conflict detection.
+_ItemA = msgspec.defstruct("Item", [("name", str)])
+_ItemB = msgspec.defstruct("Item", [("qty", int)])
 
 
 def test_openapi_disabled_by_default_has_no_route() -> None:
@@ -139,3 +146,65 @@ def test_openapi_does_not_freeze_app() -> None:
         return {"b": "1"}
 
     assert "/b" in app.openapi()["paths"]
+
+
+def test_openapi_optional_str_and_bytes_media_types() -> None:
+    app = Laminite()
+
+    @app.get("/text")
+    def text() -> str | None:
+        return "hi"
+
+    @app.get("/blob")
+    def blob() -> bytes | None:
+        return b"x"
+
+    doc = app.openapi()
+    assert "text/plain" in doc["paths"]["/text"]["get"]["responses"]["200"]["content"]
+    assert "application/octet-stream" in doc["paths"]["/blob"]["get"]["responses"]["200"]["content"]
+
+
+def test_openapi_response_returns_document_open_content() -> None:
+    app = Laminite()
+
+    @app.get("/raw")
+    def raw() -> Response:
+        return Response(b"x", media_type="text/plain")
+
+    @app.get("/json")
+    def js() -> JSONResponse:
+        return JSONResponse({"a": 1})
+
+    doc = app.openapi()
+    assert doc["paths"]["/raw"]["get"]["responses"]["default"]["content"]["*/*"] == {"schema": {}}
+    assert "application/json" in doc["paths"]["/json"]["get"]["responses"]["default"]["content"]
+
+
+def test_openapi_operation_ids_unique_for_colliding_slugs() -> None:
+    app = Laminite()
+
+    def read(item_id: int = 0) -> dict[str, int]:
+        return {"id": item_id}
+
+    app.get("/items/{item_id}")(read)
+    app.get("/items_item_id")(read)
+
+    doc = app.openapi()
+    ids = [op["operationId"] for path in doc["paths"].values() for op in path.values()]
+    assert len(ids) == len(set(ids))
+    assert ids[0] == "get_items_item_id_read"
+
+
+def test_openapi_component_name_conflict_raises() -> None:
+    app = Laminite()
+
+    @app.get("/a")
+    def a() -> _ItemA:  # type: ignore[name-defined, valid-type]
+        return _ItemA(name="x")
+
+    @app.get("/b")
+    def b() -> _ItemB:  # type: ignore[name-defined, valid-type]
+        return _ItemB(qty=1)
+
+    with pytest.raises(ValueError, match="Conflicting OpenAPI schema component"):
+        app.openapi()
