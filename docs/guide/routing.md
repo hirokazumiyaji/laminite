@@ -27,7 +27,7 @@ v1 = APIRouter(prefix="/v1")
 v1.include_router(items)
 
 app = Laminite()
-app.include_router(v1)           # GET /v1/{item_id}
+app.include_router(v1)  # GET /v1/{item_id}
 app.include_router(items, prefix="/legacy")  # GET /legacy/{item_id}
 ```
 
