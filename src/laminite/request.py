@@ -13,13 +13,15 @@ T = TypeVar("T")
 
 
 class Headers(Mapping[str, str]):
-    __slots__ = ("_store",)
+    __slots__ = ("_multi", "_pairs", "_store")
 
     def __init__(self, headers: Sequence[tuple[bytes, bytes]]) -> None:
         store: dict[str, str] = {}
         for key, value in headers:
             store[key.decode("latin-1").lower()] = value.decode("latin-1")
         self._store = store
+        self._pairs = tuple(headers)
+        self._multi: dict[str, list[str]] | None = None
 
     def __getitem__(self, key: str) -> str:
         return self._store[key.lower()]
@@ -32,6 +34,18 @@ class Headers(Mapping[str, str]):
 
     def get(self, key: str, default: str | None = None) -> str | None:  # type: ignore[override]
         return self._store.get(key.lower(), default)
+
+    def getlist(self, key: str) -> list[str]:
+        multi = self._multi
+        if multi is None:
+            built: dict[str, list[str]] = {}
+            for key_bytes, value in self._pairs:
+                built.setdefault(key_bytes.decode("latin-1").lower(), []).append(
+                    value.decode("latin-1")
+                )
+            multi = built
+            self._multi = built
+        return list(multi.get(key.lower(), []))
 
 
 def parse_query_pairs(query_string: bytes, max_num_fields: int | None) -> list[tuple[str, str]]:
@@ -74,6 +88,7 @@ class QueryParams(Mapping[str, str]):
 class Request:
     __slots__ = (
         "_body",
+        "_cookies",
         "_headers",
         "_max_body_size",
         "_max_query_fields",
@@ -97,6 +112,7 @@ class Request:
         self._path_params: Mapping[str, str] = path_params if path_params is not None else {}
         self._headers: Headers | None = None
         self._query_params: QueryParams | None = None
+        self._cookies: dict[str, str] | None = None
         self._body: bytes | None = None
         self._max_body_size = max_body_size
         self._max_query_fields = max_query_fields
@@ -127,6 +143,12 @@ class Request:
                 max_num_fields=self._max_query_fields,
             )
         return self._query_params
+
+    @property
+    def cookies(self) -> dict[str, str]:
+        if self._cookies is None:
+            self._cookies = parse_cookie_header("; ".join(self.headers.getlist("cookie")))
+        return self._cookies
 
     @property
     def state(self) -> dict[str, Any]:
@@ -184,6 +206,25 @@ def is_json_content_type(content_type: str | None) -> bool:
         and media.endswith(suffix)
         and len(media) > len(prefix) + len(suffix)
     )
+
+
+def parse_cookie_header(header: str) -> dict[str, str]:
+    """Parse one or more merged Cookie header fields into a name→value map.
+
+    The Cookie request header does not share the Set-Cookie grammar, so it is
+    parsed directly: ``http.cookies.SimpleCookie`` would consume reserved names
+    such as ``path`` or ``expires`` as attributes of the previous cookie.
+    """
+    cookies: dict[str, str] = {}
+    for chunk in header.split(";"):
+        name, sep, value = chunk.strip().partition("=")
+        if not sep or not name:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] == '"':
+            value = value[1:-1]
+        cookies[name] = value
+    return cookies
 
 
 async def _receive_body(receive: Any, max_body_size: int) -> bytes:

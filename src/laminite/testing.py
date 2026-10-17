@@ -10,15 +10,21 @@ from urllib.parse import urlencode
 import msgspec
 
 from laminite.app import Laminite
+from laminite.request import Headers
 from laminite.types import Message
 
 T = TypeVar("T")
 
 
 class TestResponse:
-    def __init__(self, status_code: int, headers: dict[str, str], content: bytes) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        headers: Sequence[tuple[bytes, bytes]],
+        content: bytes,
+    ) -> None:
         self.status_code = status_code
-        self.headers = headers
+        self.headers = Headers(headers)
         self.content = content
 
     @property
@@ -193,14 +199,12 @@ class TestClient:
         await self._resolve_http_app()(scope, receive, send)
 
         status = 500
-        resp_headers: dict[str, str] = {}
+        resp_headers: list[tuple[bytes, bytes]] = []
         resp_body = b""
         for message in messages:
             if message["type"] == "http.response.start":
                 status = message["status"]
-                resp_headers = {
-                    k.decode("latin-1"): v.decode("latin-1") for k, v in message.get("headers", [])
-                }
+                resp_headers = list(message.get("headers", []))
             elif message["type"] == "http.response.body":
                 resp_body += message.get("body", b"")
         return TestResponse(status, resp_headers, resp_body)

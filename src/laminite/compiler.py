@@ -37,8 +37,14 @@ from laminite.di import (
     strip_param_markers,
 )
 from laminite.exceptions import HTTPException
-from laminite.params import Body, Header, Query
-from laminite.request import Request, _Disconnect, is_json_content_type, parse_query_pairs
+from laminite.params import Body, Cookie, Header, Query
+from laminite.request import (
+    Request,
+    _Disconnect,
+    is_json_content_type,
+    parse_cookie_header,
+    parse_query_pairs,
+)
 from laminite.response import (
     StreamingResponse,
     encode_header_pair,
@@ -54,7 +60,7 @@ _QUERY_SCALARS: frozenset[type] = frozenset(
 
 logger = logging.getLogger("laminite")
 
-ArgSource = Literal["path", "query", "header", "body", "request", "dependency"]
+ArgSource = Literal["path", "query", "header", "cookie", "body", "request", "dependency"]
 
 
 @dataclass(slots=True)
@@ -78,6 +84,7 @@ class ArgBinding:
     alias: str | None = None
     is_list: bool = False
     header_key: bytes | None = None
+    cookie_name: str | None = None
     dep_type: type | None = None
 
 
@@ -92,12 +99,14 @@ class CompiledRoute:
     query_key_to_name: dict[str, str]  # wire key -> arg name
     list_query_names: frozenset[str]  # arg names that collect lists
     header_keys: dict[bytes, str]  # header bytes -> arg name
+    cookie_keys: dict[str, str]  # cookie name -> arg name
     body_binding: ArgBinding | None
     body_decoder: msgspec.json.Decoder[Any] | None
     needs_request: bool
     request_arg_names: tuple[str, ...]
     needs_query: bool
     needs_headers: bool
+    needs_cookies: bool
     request_providers: list[ProviderSpec]
     provided_arg_names: dict[str, type]
     app_values: dict[type[Any], Any] = field(default_factory=dict[type[Any], Any])
@@ -158,9 +167,12 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
         stripped = strip_param_markers(annotation)
         is_list = source == "query" and _is_list_type(bare)
         header_key: bytes | None = None
+        cookie_name: str | None = None
         if source == "header":
             header_name = alias if alias is not None else name.replace("_", "-")
             header_key = header_name.lower().encode("latin-1")
+        elif source == "cookie":
+            cookie_name = alias if alias is not None else name
 
         bindings.append(
             ArgBinding(
@@ -172,6 +184,7 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
                 alias=alias,
                 is_list=is_list,
                 header_key=header_key,
+                cookie_name=cookie_name,
                 dep_type=dep_type,
             )
         )
@@ -184,7 +197,7 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
 
     td_fields: dict[str, Any] = {}
     for b in bindings:
-        if b.source not in {"path", "query", "header"}:
+        if b.source not in {"path", "query", "header", "cookie"}:
             continue
         ann = b.annotation
         if b.has_default:
@@ -221,6 +234,11 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
     header_keys = {
         b.header_key: b.name for b in bindings if b.source == "header" and b.header_key is not None
     }
+    cookie_keys = {
+        b.cookie_name: b.name
+        for b in bindings
+        if b.source == "cookie" and b.cookie_name is not None
+    }
     query_key_to_name = {(b.alias or b.name): b.name for b in bindings if b.source == "query"}
     list_query_names = frozenset(b.name for b in bindings if b.source == "query" and b.is_list)
     needs_query = any(b.source == "query" for b in bindings)
@@ -236,7 +254,9 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
             else:
                 provided_arg_names[b.name] = b.dep_type
 
-    path_params_only = params_type is not None and not needs_query and not needs_headers
+    path_params_only = (
+        params_type is not None and not needs_query and not needs_headers and not cookie_keys
+    )
     needs_exit_stack = any(p.kind in {"sync_cm", "async_cm"} for p in request_providers)
     bare_call = (
         not kw_template
@@ -256,12 +276,14 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
         query_key_to_name=query_key_to_name,
         list_query_names=list_query_names,
         header_keys=header_keys,
+        cookie_keys=cookie_keys,
         body_binding=body_binding,
         body_decoder=body_decoder,
         needs_request=needs_request,
         request_arg_names=request_arg_names,
         needs_query=needs_query,
         needs_headers=needs_headers,
+        needs_cookies=bool(cookie_keys),
         request_providers=request_providers,
         provided_arg_names=provided_arg_names,
         app_values=app_values,
@@ -288,10 +310,12 @@ def build_pipeline(
     request_arg_names = route.request_arg_names
     needs_query = route.needs_query
     needs_headers = route.needs_headers
+    needs_cookies = route.needs_cookies
     bindings = route.bindings
     query_key_to_name = route.query_key_to_name
     list_query_names = route.list_query_names
     header_keys = route.header_keys
+    cookie_keys = route.cookie_keys
     request_providers = route.request_providers
     provided_arg_names = route.provided_arg_names
     app_values = route.app_values
@@ -346,12 +370,21 @@ def build_pipeline(
                                 collected.setdefault(arg_name, []).append(value)
                             else:
                                 collected[arg_name] = value
-                    if needs_headers:
+                    if needs_headers or needs_cookies:
                         wanted = header_keys
+                        cookie_parts: list[str] = []
                         for key, value in scope.get("headers", []):
-                            name = wanted.get(key)
-                            if name is not None:
-                                collected[name] = value.decode("latin-1")
+                            if needs_headers:
+                                name = wanted.get(key)
+                                if name is not None:
+                                    collected[name] = value.decode("latin-1")
+                            if needs_cookies and key == b"cookie":
+                                cookie_parts.append(value.decode("latin-1"))
+                        if needs_cookies:
+                            parsed = parse_cookie_header("; ".join(cookie_parts))
+                            for cookie_name, arg_name in cookie_keys.items():
+                                if cookie_name in parsed:
+                                    collected[arg_name] = parsed[cookie_name]
                     values = collected
 
                 try:
@@ -577,6 +610,9 @@ def _resolve_source(
         for meta in args[1:]:
             if isinstance(meta, Header):
                 marker_source = "header"
+                alias = meta.alias
+            elif isinstance(meta, Cookie):
+                marker_source = "cookie"
                 alias = meta.alias
             elif isinstance(meta, Query):
                 marker_source = "query"

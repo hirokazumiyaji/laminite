@@ -11,7 +11,7 @@ from typing import TypeVar
 V = TypeVar("V")
 
 _PARAM_RE = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*)\}$")
-_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PATH_PARAM_RE = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*):path\}$")
 
 # Read-only shared empty path-params for prebuilt static Matches: a mutable
 # singleton here would leak writes across every static resolve.
@@ -35,12 +35,22 @@ class Match[V]:
 
 
 class _Node[V]:
-    __slots__ = ("methods", "param", "param_name", "param_names", "static")
+    __slots__ = (
+        "methods",
+        "param",
+        "param_name",
+        "param_names",
+        "path",
+        "path_param_name",
+        "static",
+    )
 
     def __init__(self) -> None:
         self.static: dict[str, _Node[V]] = {}
         self.param: _Node[V] | None = None
         self.param_name: str | None = None
+        self.path: _Node[V] | None = None
+        self.path_param_name: str | None = None
         self.methods: dict[str, V] = {}
         self.param_names: tuple[str, ...] = ()
 
@@ -66,8 +76,19 @@ class Router[V]:
 
         try:
             node: _Node[V] = self._root
-            for segment, is_param, name in segments:
-                if is_param:
+            for segment, kind, name in segments:
+                if kind == "path":
+                    assert name is not None
+                    if node.path is None:
+                        node.path = _Node()
+                        node.path_param_name = name
+                    elif node.path_param_name != name:
+                        raise ValueError(
+                            f"Conflicting path parameter names at the same position: "
+                            f"{node.path_param_name!r} vs {name!r}"
+                        )
+                    node = node.path
+                elif kind == "param":
                     assert name is not None
                     if node.param is None:
                         node.param = _Node[V]()
@@ -140,15 +161,24 @@ class Router[V]:
         method: str,
     ) -> tuple[Match[V] | None, frozenset[str] | None]:
         if index == len(parts):
-            if not node.methods:
-                return None, None
-            hit = _match_method(node, values, method)
-            if hit is not None:
-                return hit, None
-            return None, _allow_set(node.methods)
+            allowed: frozenset[str] | None = None
+            if node.methods:
+                hit = _match_method(node, values, method)
+                if hit is not None:
+                    return hit, None
+                allowed = _allow_set(node.methods)
+            if node.path is not None:
+                values.append("")
+                hit = _match_method(node.path, values, method)
+                values.pop()
+                if hit is not None:
+                    return hit, None
+                if node.path.methods:
+                    allowed = _union(allowed, _allow_set(node.path.methods))
+            return None, allowed
 
         segment = parts[index]
-        allowed: frozenset[str] | None = None
+        allowed = None
 
         child = node.static.get(segment)
         if child is not None:
@@ -164,6 +194,15 @@ class Router[V]:
             if match is not None:
                 return match, None
             allowed = _union(allowed, child_allowed)
+
+        if node.path is not None:
+            values.append("/".join(parts[index:]))
+            hit = _match_method(node.path, values, method)
+            values.pop()
+            if hit is not None:
+                return hit, None
+            if node.path.methods:
+                allowed = _union(allowed, _allow_set(node.path.methods))
 
         return None, allowed
 
@@ -207,7 +246,11 @@ def path_parameter_names(path: str) -> frozenset[str]:
 
 def _parse_template(
     path: str,
-) -> tuple[list[tuple[str, bool, str | None]], tuple[str, ...], bool]:
+) -> tuple[list[tuple[str, str, str | None]], tuple[str, ...], bool]:
+    """Parse a path template into (segment, kind, name) triples.
+
+    ``kind`` is ``"static"``, ``"param"``, or ``"path"``.
+    """
     if not path.startswith("/"):
         raise ValueError(f"Path must start with '/': {path!r}")
     if path != "/" and "//" in path:
@@ -217,7 +260,7 @@ def _parse_template(
         return [], (), True
 
     names: list[str] = []
-    segments: list[tuple[str, bool, str | None]] = []
+    segments: list[tuple[str, str, str | None]] = []
     is_static = True
     raw = path[1:]
     parts = raw.split("/")
@@ -227,20 +270,29 @@ def _parse_template(
             # Trailing slash yields a final empty segment; empty in the middle is invalid.
             if index != last_index or not path.endswith("/"):
                 raise ValueError(f"Invalid path template: {path!r}")
-            segments.append(("", False, None))
+            segments.append(("", "static", None))
+            continue
+        m_path = _PATH_PARAM_RE.match(part)
+        if m_path:
+            if index != last_index:
+                raise ValueError(f"{{name:path}} must be the final segment: {path!r}")
+            name = m_path.group(1)
+            if name in names:
+                raise ValueError(f"Duplicate parameter name: {name!r}")
+            names.append(name)
+            segments.append((part, "path", name))
+            is_static = False
             continue
         m = _PARAM_RE.match(part)
         if m:
             name = m.group(1)
-            if not _IDENT_RE.match(name):
-                raise ValueError(f"Invalid parameter name: {name!r}")
             if name in names:
                 raise ValueError(f"Duplicate parameter name: {name!r}")
             names.append(name)
-            segments.append((part, True, name))
+            segments.append((part, "param", name))
             is_static = False
         elif "{" in part or "}" in part:
             raise ValueError(f"Invalid path template segment: {part!r}")
         else:
-            segments.append((part, False, None))
+            segments.append((part, "static", None))
     return segments, tuple(names), is_static

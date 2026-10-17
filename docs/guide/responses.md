@@ -11,6 +11,10 @@
 
 If `status_code=` is omitted on the route, `None` becomes 204 and other values become 200. When the handler returns a `Response` or `StreamingResponse`, the route `status_code` is ignored.
 
+`headers=` accepts a `Mapping[str, str]` or a sequence of `(name, value)` pairs so duplicate names such as multiple `Set-Cookie` values are possible. Prefer `Response.set_cookie(...)` / `Response.delete_cookie(...)` for cookies.
+
+`TestResponse.headers.getlist(name)` returns every value for a header name.
+
 ## Streaming
 
 `StreamingResponse` accepts a sync or async iterator of `bytes` or `str`. Chunks are sent with `more_body=True`; request-scoped providers stay open until the stream finishes.
