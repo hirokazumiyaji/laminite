@@ -8,10 +8,14 @@ import logging
 from collections.abc import Callable, Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
+from datetime import date, datetime, time
+from decimal import Decimal
+from enum import Enum
 from types import UnionType
 from typing import (
     Annotated,
     Any,
+    Literal,
     NotRequired,
     Required,
     TypedDict,
@@ -21,15 +25,26 @@ from typing import (
     get_type_hints,
 )
 from urllib.parse import parse_qsl
+from uuid import UUID
 
 import msgspec
 from msgspec import Struct
 
-from laminite.di import DependencyRegistry, ProviderSpec, run_providers, strip_annotated
+from laminite.di import (
+    DependencyRegistry,
+    ProviderSpec,
+    run_providers,
+    strip_annotated,
+    strip_param_markers,
+)
 from laminite.exceptions import HTTPException
 from laminite.params import Body, Header, Query
 from laminite.request import Request, _Disconnect
 from laminite.response import error_json, render_result, send_response
+
+_QUERY_SCALARS: frozenset[type] = frozenset(
+    {str, int, float, bool, bytes, UUID, datetime, date, time, Decimal}
+)
 
 logger = logging.getLogger("laminite")
 
@@ -113,15 +128,17 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
         has_default = param.default is not inspect.Parameter.empty
         default = param.default if has_default else None
         source, alias, dep_type = _resolve_source(name, annotation, info.path_param_names, registry)
+        bare = strip_annotated(annotation)
         if source == "path":
             covered_path.add(name)
-            if _is_list_type(annotation):
+            if _is_list_type(bare):
                 raise TypeError(f"Path parameter {name!r} cannot be a list type")
         if source == "body":
             body_count += 1
 
-        stripped = strip_annotated(annotation)
-        is_list = source == "query" and _is_list_type(stripped)
+        # Keep msgspec.Meta (and other non-marker metadata) for TypedDict / Decoder.
+        stripped = strip_param_markers(annotation)
+        is_list = source == "query" and _is_list_type(bare)
         header_key: bytes | None = None
         if source == "header":
             header_name = alias if alias is not None else name.replace("_", "-")
@@ -421,11 +438,13 @@ def _resolve_source(
     if name in path_params:
         return "path", None, None
 
-    raw = annotation
+    # Peel an Optional wrapper first so `Annotated[X, Marker] | None` and
+    # `Annotated[X, Marker]` take the same classification path.
+    raw = _unwrap_optional(annotation)
     alias: str | None = None
     marker_source: str | None = None
-    if get_origin(annotation) is Annotated:
-        args = get_args(annotation)
+    if get_origin(raw) is Annotated:
+        args = get_args(raw)
         raw = args[0]
         for meta in args[1:]:
             if isinstance(meta, Header):
@@ -441,18 +460,20 @@ def _resolve_source(
         return "request", None, None
     if marker_source is not None:
         return marker_source, alias, None
-    if isinstance(raw, type) and registry.has(raw):
-        return "dependency", None, raw
-    if isinstance(raw, type) and issubclass(raw, Struct):
+
+    core = strip_annotated(_unwrap_optional(raw))
+    if isinstance(core, type) and registry.has(core):
+        return "dependency", None, core
+    if isinstance(core, type) and issubclass(core, Struct):
         return "body", None, None
-    if isinstance(raw, type) and not _is_query_compatible(raw):
-        # User-defined class that is not a registered dependency.
-        raise ValueError(f"Unregistered dependency: {raw!r}")
-    return "query", alias, None
+    bad = _bad_query_type(raw)
+    if bad is None:
+        return "query", alias, None
+    raise ValueError(f"Unregistered dependency: {bad!r}")
 
 
 def _is_list_type(annotation: Any) -> bool:
-    annotation = _unwrap_optional(annotation)
+    annotation = strip_annotated(_unwrap_optional(annotation))
     return get_origin(annotation) is list
 
 
@@ -465,14 +486,30 @@ def _unwrap_optional(annotation: Any) -> Any:
     return annotation
 
 
-def _is_query_compatible(annotation: Any) -> bool:
+def _bad_query_type(annotation: Any) -> Any | None:
+    """Offending leaf if `annotation` can't be a path/query/header value; None if it can."""
     annotation = _unwrap_optional(annotation)
-    if annotation in (str, int, float, bool, bytes):
-        return True
+    if get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    supertype = getattr(annotation, "__supertype__", None)
+    if supertype is not None:
+        return annotation if _bad_query_type(supertype) is not None else None
+    if annotation in _QUERY_SCALARS:
+        return None
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        return None
     origin = get_origin(annotation)
+    if origin is Literal:
+        return None
     if origin is list:
         args = get_args(annotation)
-        return bool(args) and _is_query_compatible(args[0])
+        return annotation if not args else _bad_query_type(args[0])
     if origin is Union or origin is UnionType:
-        return all(_is_query_compatible(a) for a in get_args(annotation) if a is not type(None))
-    return False
+        for arg in get_args(annotation):
+            if arg is type(None):
+                continue
+            bad = _bad_query_type(arg)
+            if bad is not None:
+                return bad
+        return None
+    return annotation
