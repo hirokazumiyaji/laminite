@@ -24,7 +24,6 @@ from typing import (
     get_origin,
     get_type_hints,
 )
-from urllib.parse import parse_qsl
 from uuid import UUID
 
 import msgspec
@@ -39,9 +38,10 @@ from laminite.di import (
 )
 from laminite.exceptions import HTTPException
 from laminite.params import Body, Header, Query
-from laminite.request import Request, _Disconnect
+from laminite.request import Request, _Disconnect, is_json_content_type, parse_query_pairs
 from laminite.response import (
     StreamingResponse,
+    encode_header_pair,
     error_json,
     render_result,
     send_response,
@@ -63,6 +63,7 @@ class RouteInfo:
     status_code: int | None
     offload: bool
     path_param_names: frozenset[str]
+    max_body_size: int | None = None
 
 
 @dataclass(slots=True)
@@ -106,9 +107,15 @@ def compile_route(
     registry: DependencyRegistry,
     *,
     max_body_size: int,
+    max_query_fields: int,
 ) -> Callable[..., Any]:
     compiled = analyze_handler(info, registry)
-    return build_pipeline(compiled, max_body_size=max_body_size)
+    body_limit = info.max_body_size if info.max_body_size is not None else max_body_size
+    return build_pipeline(
+        compiled,
+        max_body_size=body_limit,
+        max_query_fields=max_query_fields,
+    )
 
 
 def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRoute:
@@ -249,6 +256,7 @@ def build_pipeline(
     route: CompiledRoute,
     *,
     max_body_size: int,
+    max_query_fields: int,
 ) -> Callable[..., Any]:
     handler = route.handler
     params_type = route.params_type
@@ -271,7 +279,11 @@ def build_pipeline(
         try:
             if route.needs_request:
                 request = Request(
-                    scope, receive, path_params=path_params, max_body_size=max_body_size
+                    scope,
+                    receive,
+                    path_params=path_params,
+                    max_body_size=max_body_size,
+                    max_query_fields=max_query_fields,
                 )
                 for name in route.request_arg_names:
                     kwargs[name] = request
@@ -282,10 +294,7 @@ def build_pipeline(
                     if b.source == "path":
                         values[b.name] = path_params[b.name]
                 if route.needs_query:
-                    raw_q = parse_qsl(
-                        scope.get("query_string", b"").decode("latin-1"),
-                        keep_blank_values=True,
-                    )
+                    raw_q = parse_query_pairs(scope.get("query_string", b""), max_query_fields)
                     for key, value in raw_q:
                         arg_name = route.query_key_to_name.get(key)
                         if arg_name is None:
@@ -310,12 +319,23 @@ def build_pipeline(
 
             if body_binding is not None and body_decoder is not None:
                 assert request is not None
+                # Validate Content-Type before consuming the body so a mismatched
+                # client never gets to transfer up to max_body_size bytes.
+                content_type = request.headers.get("content-type")
+                if (content_type is None and not body_binding.has_default) or (
+                    content_type is not None and not is_json_content_type(content_type)
+                ):
+                    await _send_error(send, "Unsupported Media Type", 415, is_head)
+                    return
                 # Let HTTPException (e.g. 413) reach the outer handler path so
                 # @app.exception_handler(HTTPException) applies consistently.
                 raw = await request.body()
                 if not raw and body_binding.has_default:
                     kwargs[body_binding.name] = body_binding.default
                 else:
+                    if content_type is None:
+                        await _send_error(send, "Unsupported Media Type", 415, is_head)
+                        return
                     try:
                         kwargs[body_binding.name] = body_decoder.decode(raw)
                     except msgspec.ValidationError as exc:
@@ -416,7 +436,11 @@ def build_pipeline(
             if exc_handler is not None:
                 if request is None:
                     request = Request(
-                        scope, receive, path_params=path_params, max_body_size=max_body_size
+                        scope,
+                        receive,
+                        path_params=path_params,
+                        max_body_size=max_body_size,
+                        max_query_fields=max_query_fields,
                     )
                 status_out, headers, body = await _run_exception_handler(exc_handler, request, exc)
             elif isinstance(exc, HTTPException):
@@ -449,7 +473,7 @@ async def _send_http_exception(send: Any, exc: HTTPException, is_head: bool) -> 
     status, headers, body = error_json(exc.detail, exc.status_code)
     if exc.headers:
         for key, value in exc.headers.items():
-            headers.append((key.lower().encode("latin-1"), value.encode("latin-1")))
+            headers.append(encode_header_pair(key, value))
     await send_response(send, status_code=status, headers=headers, body=body, is_head=is_head)
 
 

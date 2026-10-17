@@ -29,9 +29,11 @@ class Laminite:
         *,
         lifespan: Callable[[Laminite], AbstractAsyncContextManager[None]] | None = None,
         max_body_size: int = 1_048_576,
+        max_query_fields: int = 1000,
     ) -> None:
         self._lifespan_factory = lifespan
         self._max_body_size = max_body_size
+        self._max_query_fields = max_query_fields
         self._router: Router[Any] = Router()
         self._routes: list[RouteInfo] = []
         self._registry = DependencyRegistry()
@@ -53,37 +55,80 @@ class Laminite:
         *,
         status_code: int | None = None,
         offload: bool = False,
+        max_body_size: int | None = None,
     ) -> Callable[[F], F]:
         def decorator(func: F) -> F:
-            self._add_route(path, methods, func, status_code=status_code, offload=offload)
+            self._add_route(
+                path,
+                methods,
+                func,
+                status_code=status_code,
+                offload=offload,
+                max_body_size=max_body_size,
+            )
             return func
 
         return decorator
 
     def get(
-        self, path: str, *, status_code: int | None = None, offload: bool = False
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        offload: bool = False,
+        max_body_size: int | None = None,
     ) -> Callable[[F], F]:
-        return self.route(path, ["GET"], status_code=status_code, offload=offload)
+        return self.route(
+            path, ["GET"], status_code=status_code, offload=offload, max_body_size=max_body_size
+        )
 
     def post(
-        self, path: str, *, status_code: int | None = None, offload: bool = False
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        offload: bool = False,
+        max_body_size: int | None = None,
     ) -> Callable[[F], F]:
-        return self.route(path, ["POST"], status_code=status_code, offload=offload)
+        return self.route(
+            path, ["POST"], status_code=status_code, offload=offload, max_body_size=max_body_size
+        )
 
     def put(
-        self, path: str, *, status_code: int | None = None, offload: bool = False
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        offload: bool = False,
+        max_body_size: int | None = None,
     ) -> Callable[[F], F]:
-        return self.route(path, ["PUT"], status_code=status_code, offload=offload)
+        return self.route(
+            path, ["PUT"], status_code=status_code, offload=offload, max_body_size=max_body_size
+        )
 
     def patch(
-        self, path: str, *, status_code: int | None = None, offload: bool = False
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        offload: bool = False,
+        max_body_size: int | None = None,
     ) -> Callable[[F], F]:
-        return self.route(path, ["PATCH"], status_code=status_code, offload=offload)
+        return self.route(
+            path, ["PATCH"], status_code=status_code, offload=offload, max_body_size=max_body_size
+        )
 
     def delete(
-        self, path: str, *, status_code: int | None = None, offload: bool = False
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        offload: bool = False,
+        max_body_size: int | None = None,
     ) -> Callable[[F], F]:
-        return self.route(path, ["DELETE"], status_code=status_code, offload=offload)
+        return self.route(
+            path, ["DELETE"], status_code=status_code, offload=offload, max_body_size=max_body_size
+        )
 
     def _add_route(
         self,
@@ -93,6 +138,7 @@ class Laminite:
         *,
         status_code: int | None,
         offload: bool,
+        max_body_size: int | None,
     ) -> None:
         self._ensure_mutable()
         methods_t = tuple(m.upper() for m in methods)
@@ -103,6 +149,7 @@ class Laminite:
             status_code=status_code,
             offload=offload,
             path_param_names=path_parameter_names(path),
+            max_body_size=max_body_size,
         )
         self._routes.append(info)
         # Registration-time validation only (duplicate routes, param-name
@@ -198,6 +245,7 @@ class Laminite:
                     info,
                     registry,
                     max_body_size=self._max_body_size,
+                    max_query_fields=self._max_query_fields,
                 )
             pipeline = pipelines[key]
             for method in info.methods:

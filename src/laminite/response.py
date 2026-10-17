@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import sys
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -32,6 +33,35 @@ CONTENT_TYPE_OCTET = (b"content-type", b"application/octet-stream")
 # One encoder for every body, so success and error responses encode identically.
 _ENCODER = msgspec.json.Encoder()
 
+# Prevent header-injection: names must be RFC 9110 tokens; values must be
+# RFC 9110 field-content (VCHAR / SP / HTAB), so reject every other CTL.
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_HEADER_VALUE_INVALID_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+
+
+def validate_header_name(name: str) -> None:
+    if not _HEADER_NAME_RE.fullmatch(name):
+        raise ValueError(f"Invalid header name: {name!r}")
+
+
+def validate_header_value(value: str) -> None:
+    if _HEADER_VALUE_INVALID_RE.search(value):
+        raise ValueError(f"Invalid header value: {value!r}")
+    try:
+        value.encode("latin-1")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"Invalid header value: {value!r}") from exc
+
+
+def validate_header_pair(name: str, value: str) -> None:
+    validate_header_name(name)
+    validate_header_value(value)
+
+
+def encode_header_pair(name: str, value: str) -> tuple[bytes, bytes]:
+    validate_header_pair(name, value)
+    return name.lower().encode("latin-1"), value.encode("latin-1")
+
 
 def _append_headers(
     raw_headers: list[tuple[bytes, bytes]],
@@ -40,9 +70,9 @@ def _append_headers(
 ) -> None:
     if headers:
         for key, value in headers.items():
-            raw_headers.append((key.lower().encode("latin-1"), value.encode("latin-1")))
+            raw_headers.append(encode_header_pair(key, value))
     if media_type is not None:
-        raw_headers.append((b"content-type", media_type.encode("latin-1")))
+        raw_headers.append(encode_header_pair("content-type", media_type))
 
 
 class Response:
@@ -149,7 +179,11 @@ async def send_response(
     body: bytes,
     is_head: bool,
 ) -> None:
-    header_list = list(headers)
+    # Framing is ours to set; a caller-supplied Content-Length or Transfer-Encoding
+    # could disagree with the body (RFC 9112 forbids sending both together).
+    header_list = [
+        pair for pair in headers if pair[0] not in (b"content-length", b"transfer-encoding")
+    ]
     header_list.append((b"content-length", str(len(body)).encode("latin-1")))
     await send(
         {

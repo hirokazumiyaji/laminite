@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, TypeVar
 from urllib.parse import parse_qsl
@@ -33,11 +34,24 @@ class Headers(Mapping[str, str]):
         return self._store.get(key.lower(), default)
 
 
+def parse_query_pairs(query_string: bytes, max_num_fields: int | None) -> list[tuple[str, str]]:
+    try:
+        return parse_qsl(
+            query_string.decode("latin-1"),
+            keep_blank_values=True,
+            max_num_fields=max_num_fields,
+        )
+    except ValueError as exc:
+        from laminite.exceptions import HTTPException
+
+        raise HTTPException(400, "Too many query fields") from exc
+
+
 class QueryParams(Mapping[str, str]):
     __slots__ = ("_items", "_multi")
 
-    def __init__(self, query_string: bytes) -> None:
-        pairs = parse_qsl(query_string.decode("latin-1"), keep_blank_values=True)
+    def __init__(self, query_string: bytes, *, max_num_fields: int | None = None) -> None:
+        pairs = parse_query_pairs(query_string, max_num_fields)
         multi: dict[str, list[str]] = {}
         for key, value in pairs:
             multi.setdefault(key, []).append(value)
@@ -62,6 +76,7 @@ class Request:
         "_body",
         "_headers",
         "_max_body_size",
+        "_max_query_fields",
         "_path_params",
         "_query_params",
         "_receive",
@@ -75,6 +90,7 @@ class Request:
         *,
         path_params: dict[str, str] | None = None,
         max_body_size: int = 1_048_576,
+        max_query_fields: int | None = 1000,
     ) -> None:
         self.scope = scope
         self._receive = receive
@@ -83,6 +99,7 @@ class Request:
         self._query_params: QueryParams | None = None
         self._body: bytes | None = None
         self._max_body_size = max_body_size
+        self._max_query_fields = max_query_fields
 
     @property
     def method(self) -> str:
@@ -105,7 +122,10 @@ class Request:
     @property
     def query_params(self) -> QueryParams:
         if self._query_params is None:
-            self._query_params = QueryParams(self.scope.get("query_string", b""))
+            self._query_params = QueryParams(
+                self.scope.get("query_string", b""),
+                max_num_fields=self._max_query_fields,
+            )
         return self._query_params
 
     @property
@@ -118,6 +138,7 @@ class Request:
 
     async def body(self) -> bytes:
         if self._body is None:
+            _reject_oversized_content_length(self.scope.get("headers", []), self._max_body_size)
             self._body = await _receive_body(self._receive, self._max_body_size)
         return self._body
 
@@ -126,6 +147,43 @@ class Request:
         if tp is Any:
             return msgspec.json.decode(data)  # type: ignore[no-any-return]
         return msgspec.json.decode(data, type=tp)
+
+
+_CONTENT_LENGTH_RE = re.compile(r"^[0-9]+$")
+
+
+def _reject_oversized_content_length(
+    headers: Sequence[tuple[bytes, bytes]], max_body_size: int
+) -> None:
+    from laminite.exceptions import HTTPException
+
+    seen: int | None = None
+    for key, value in headers:
+        if key != b"content-length":
+            continue
+        raw = value.decode("latin-1").strip()
+        if not _CONTENT_LENGTH_RE.fullmatch(raw):
+            raise HTTPException(400, "Invalid Content-Length")
+        length = int(raw)
+        if seen is not None and length != seen:
+            raise HTTPException(400, "Invalid Content-Length")
+        seen = length
+    if seen is not None and seen > max_body_size:
+        raise HTTPException(413, "Payload Too Large")
+
+
+def is_json_content_type(content_type: str | None) -> bool:
+    if content_type is None:
+        return False
+    media = content_type.split(";", 1)[0].strip().lower()
+    if media == "application/json":
+        return True
+    prefix, suffix = "application/", "+json"
+    return (
+        media.startswith(prefix)
+        and media.endswith(suffix)
+        and len(media) > len(prefix) + len(suffix)
+    )
 
 
 async def _receive_body(receive: Any, max_body_size: int) -> bytes:

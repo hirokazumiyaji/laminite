@@ -80,7 +80,11 @@ def test_http_exception_handler_receives_413_from_body() -> None:
         return {"name": item.name}
 
     client = TestClient(app)
-    res = client.post("/items", content=b"0123456789")
+    res = client.post(
+        "/items",
+        content=b"0123456789",
+        headers={"content-type": "application/json"},
+    )
     assert res.status_code == 413
     assert res.text == "handled:413:Payload Too Large"
     client.close()

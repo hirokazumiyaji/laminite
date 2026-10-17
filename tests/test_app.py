@@ -241,7 +241,7 @@ def test_body_decode() -> None:
     res = client.post("/items", json={"name": "x", "price": 10.0})
     assert res.status_code == 201
     assert res.json()["name"] == "x"
-    bad_json = client.post("/items", content=b"{")
+    bad_json = client.post("/items", content=b"{", headers={"content-type": "application/json"})
     assert bad_json.status_code == 400
     bad_schema = client.post("/items", json={"name": "x"})
     assert bad_schema.status_code == 422

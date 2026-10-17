@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from http import HTTPStatus
 from typing import Any
 
+from laminite.response import validate_header_pair
+
 
 class HTTPException(Exception):
     def __init__(
@@ -21,5 +23,8 @@ class HTTPException(Exception):
                 detail = "Error"
         self.status_code = status_code
         self.detail = detail
+        if headers is not None:
+            for key, value in headers.items():
+                validate_header_pair(key, value)
         self.headers = dict(headers) if headers is not None else None
         super().__init__(detail)
