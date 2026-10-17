@@ -39,7 +39,7 @@ class Laminite:
         self._frozen = False
         self._lifespan_cm: AbstractAsyncContextManager[None] | None = None
         self._overrides: Mapping[type, Any] | None = None
-        self._http = self._http_before_freeze
+        self._http: ASGIApp = self._http_before_freeze
 
     def _ensure_mutable(self) -> None:
         if self._frozen:

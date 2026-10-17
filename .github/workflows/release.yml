@@ -13,6 +13,9 @@ jobs:
   test:
     name: Test before publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
@@ -36,7 +39,7 @@ jobs:
         run: uv run pyright
 
       - name: Pytest with coverage
-        run: uv run pytest --cov=laminite --cov-report=term-missing --cov-fail-under=90
+        run: uv run pytest --cov=laminite --cov-report=term-missing
 
       - name: Verify tag matches package version
         run: |

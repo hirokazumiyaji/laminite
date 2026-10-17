@@ -20,7 +20,6 @@ from typing import (
     Required,
     TypedDict,
     Union,
-    cast,
     get_args,
     get_origin,
     get_type_hints,
@@ -88,7 +87,7 @@ class CompiledRoute:
     offload: bool
     status_code: int | None
     bindings: list[ArgBinding]
-    params_type: type | None
+    params_type: type[Any] | None
     query_key_to_name: dict[str, str]  # wire key -> arg name
     list_query_names: frozenset[str]  # arg names that collect lists
     header_keys: dict[bytes, str]  # header bytes -> arg name
@@ -183,7 +182,7 @@ def analyze_handler(info: RouteInfo, registry: DependencyRegistry) -> CompiledRo
         else:
             td_fields[b.name] = Required[ann]  # type: ignore[valid-type]
 
-    params_type: type | None = None
+    params_type: type[Any] | None = None
     if td_fields:
         params_type = TypedDict(  # type: ignore[misc, valid-type]
             f"_Params_{handler.__name__}_{id(handler)}",
@@ -305,9 +304,8 @@ def build_pipeline(
                             values[name] = value.decode("latin-1")
 
                 try:
-                    converted = cast(
-                        Mapping[str, Any],
-                        msgspec.convert(values, params_type, strict=False),
+                    converted: Mapping[str, Any] = msgspec.convert(
+                        values, params_type, strict=False
                     )
                 except msgspec.ValidationError as exc:
                     await _send_error(send, str(exc), 422, is_head)

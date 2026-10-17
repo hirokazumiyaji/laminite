@@ -76,8 +76,6 @@ typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
 reportPrivateUsage = false
-# Recursive Router/_Node generics still trip unknown-member under strict.
-reportUnknownMemberType = false
 reportUnknownVariableType = false
 reportUnknownArgumentType = false
 
