@@ -104,6 +104,27 @@ def test_request_cookies_lazy_parse() -> None:
     assert req._cookies is not None
 
 
+def test_reserved_cookie_names_are_plain_cookies() -> None:
+    app = Laminite()
+
+    @app.get("/me")
+    def me(
+        path: Annotated[str, Cookie()],
+        session: Annotated[str, Cookie()],
+        httponly: Annotated[str, Cookie()],
+    ) -> dict[str, str]:
+        return {"path": path, "session": session, "httponly": httponly}
+
+    client = TestClient(app)
+    res = client.get(
+        "/me",
+        headers={"cookie": "path=/app; session=xyz; httponly=no; expires=soon"},
+    )
+    assert res.status_code == 200
+    assert res.json() == {"path": "/app", "session": "xyz", "httponly": "no"}
+    client.close()
+
+
 def test_multiple_cookie_headers_are_merged() -> None:
     app = Laminite()
 

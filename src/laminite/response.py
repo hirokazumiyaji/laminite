@@ -10,6 +10,7 @@ import sys
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
+from email.utils import format_datetime
 from http.cookies import SimpleCookie
 from typing import Any, Literal, cast
 
@@ -129,7 +130,8 @@ class Response:
         if expires is not None:
             if isinstance(expires, datetime):
                 aware = expires if expires.tzinfo is not None else expires.replace(tzinfo=UTC)
-                morsel["expires"] = aware.astimezone(UTC).strftime("%a, %d %b %Y %H:%M:%S GMT")
+                # Locale-independent IMF-fixdate (GMT day/month names).
+                morsel["expires"] = format_datetime(aware.astimezone(UTC), usegmt=True)
             else:
                 morsel["expires"] = expires
         morsel["path"] = path

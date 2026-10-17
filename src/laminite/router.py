@@ -12,7 +12,6 @@ V = TypeVar("V")
 
 _PARAM_RE = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 _PATH_PARAM_RE = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*):path\}$")
-_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Read-only shared empty path-params for prebuilt static Matches: a mutable
 # singleton here would leak writes across every static resolve.
@@ -278,8 +277,6 @@ def _parse_template(
             if index != last_index:
                 raise ValueError(f"{{name:path}} must be the final segment: {path!r}")
             name = m_path.group(1)
-            if not _IDENT_RE.match(name):
-                raise ValueError(f"Invalid parameter name: {name!r}")
             if name in names:
                 raise ValueError(f"Duplicate parameter name: {name!r}")
             names.append(name)
@@ -289,8 +286,6 @@ def _parse_template(
         m = _PARAM_RE.match(part)
         if m:
             name = m.group(1)
-            if not _IDENT_RE.match(name):
-                raise ValueError(f"Invalid parameter name: {name!r}")
             if name in names:
                 raise ValueError(f"Duplicate parameter name: {name!r}")
             names.append(name)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Mapping, Sequence
-from http.cookies import SimpleCookie
 from typing import Any, TypeVar
 from urllib.parse import parse_qsl
 
@@ -14,18 +13,15 @@ T = TypeVar("T")
 
 
 class Headers(Mapping[str, str]):
-    __slots__ = ("_multi", "_store")
+    __slots__ = ("_multi", "_pairs", "_store")
 
     def __init__(self, headers: Sequence[tuple[bytes, bytes]]) -> None:
         store: dict[str, str] = {}
-        multi: dict[str, list[str]] = {}
         for key, value in headers:
-            name = key.decode("latin-1").lower()
-            text = value.decode("latin-1")
-            multi.setdefault(name, []).append(text)
-            store[name] = text
+            store[key.decode("latin-1").lower()] = value.decode("latin-1")
         self._store = store
-        self._multi = multi
+        self._pairs = tuple(headers)
+        self._multi: dict[str, list[str]] | None = None
 
     def __getitem__(self, key: str) -> str:
         return self._store[key.lower()]
@@ -40,7 +36,15 @@ class Headers(Mapping[str, str]):
         return self._store.get(key.lower(), default)
 
     def getlist(self, key: str) -> list[str]:
-        return list(self._multi.get(key.lower(), []))
+        multi = self._multi
+        if multi is None:
+            multi = {}
+            for key_bytes, value in self._pairs:
+                multi.setdefault(key_bytes.decode("latin-1").lower(), []).append(
+                    value.decode("latin-1")
+                )
+            self._multi = multi
+        return list(multi.get(key.lower(), []))
 
 
 def parse_query_pairs(query_string: bytes, max_num_fields: int | None) -> list[tuple[str, str]]:
@@ -204,12 +208,22 @@ def is_json_content_type(content_type: str | None) -> bool:
 
 
 def parse_cookie_header(header: str) -> dict[str, str]:
-    """Parse a Cookie header into a name→value map (last value wins per name)."""
-    if not header:
-        return {}
-    jar: SimpleCookie = SimpleCookie()
-    jar.load(header)
-    return {key: morsel.value for key, morsel in jar.items()}
+    """Parse one or more merged Cookie header fields into a name→value map.
+
+    The Cookie request header does not share the Set-Cookie grammar, so it is
+    parsed directly: ``http.cookies.SimpleCookie`` would consume reserved names
+    such as ``path`` or ``expires`` as attributes of the previous cookie.
+    """
+    cookies: dict[str, str] = {}
+    for chunk in header.split(";"):
+        name, sep, value = chunk.strip().partition("=")
+        if not sep or not name:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] == '"':
+            value = value[1:-1]
+        cookies[name] = value
+    return cookies
 
 
 async def _receive_body(receive: Any, max_body_size: int) -> bytes:
