@@ -520,9 +520,14 @@ def build_pipeline(
                 if stack is not None:
                     await stack.__aexit__(None, None, None)
 
-            await send_response(
-                send, status_code=status_out, headers=headers, body=body, is_head=is_head
-            )
+            try:
+                await send_response(
+                    send, status_code=status_out, headers=headers, body=body, is_head=is_head
+                )
+            except Exception:
+                # Response already started; the error path would violate ASGI protocol.
+                logger.exception("Failed to send response")
+            return
         except _Disconnect:
             return
         except Exception as exc:

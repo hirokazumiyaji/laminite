@@ -98,7 +98,6 @@ class Request:
         "scope",
     )
 
-    # ASGI scope key for the matched path template (e.g. "/items/{item_id}").
     ROUTE_SCOPE_KEY = "laminite.route"
 
     def __init__(
@@ -131,8 +130,7 @@ class Request:
     @property
     def route(self) -> str | None:
         """Matched path template, or ``None`` when no route matched (404/405)."""
-        value = self.scope.get(self.ROUTE_SCOPE_KEY)
-        return value if isinstance(value, str) else None
+        return self.scope.get(self.ROUTE_SCOPE_KEY)  # type: ignore[no-any-return]
 
     @property
     def path_params(self) -> Mapping[str, str]:
