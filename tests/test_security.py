@@ -253,11 +253,15 @@ def test_caller_content_length_header_is_replaced() -> None:
     async def index() -> Response:
         return Response(b"hello", headers={"content-length": "999"})
 
+    @app.get("/te")
+    async def te() -> Response:
+        return Response(b"hello", headers={"Transfer-Encoding": "chunked"})
+
     @app.get("/err")
     async def err() -> None:
         raise HTTPException(400, "bad", headers={"Content-Length": "999"})
 
-    async def lengths(path: str) -> list[bytes]:
+    async def header_values(path: str, name: bytes) -> list[bytes]:
         scope = {
             "type": "http",
             "asgi": {"version": "3.0"},
@@ -283,11 +287,12 @@ def test_caller_content_length_header_is_replaced() -> None:
 
         await app(scope, receive, send)
         start = next(m for m in messages if m["type"] == "http.response.start")
-        return [v for k, v in start["headers"] if k == b"content-length"]
+        return [v for k, v in start["headers"] if k == name]
 
-    assert asyncio.run(lengths("/")) == [b"5"]
-    assert len(asyncio.run(lengths("/err"))) == 1
-    assert asyncio.run(lengths("/err")) != [b"999"]
+    assert asyncio.run(header_values("/", b"content-length")) == [b"5"]
+    assert len(asyncio.run(header_values("/err", b"content-length"))) == 1
+    assert asyncio.run(header_values("/err", b"content-length")) != [b"999"]
+    assert asyncio.run(header_values("/te", b"transfer-encoding")) == []
 
 
 def test_route_max_body_size_override() -> None:
