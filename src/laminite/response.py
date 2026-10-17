@@ -88,26 +88,17 @@ def _append_headers(
         raw_headers.append(encode_header_pair("content-type", media_type))
 
 
-class Response:
-    def __init__(
-        self,
-        content: bytes | str = b"",
-        *,
-        status_code: int = 200,
-        headers: HeadersInput | None = None,
-        media_type: str | None = None,
-    ) -> None:
-        if isinstance(content, str):
-            body = content.encode("utf-8")
-            if media_type is None:
-                media_type = "text/plain; charset=utf-8"
-        else:
-            body = content
-        self.body = body
-        self.status_code = status_code
-        self.media_type = media_type
-        self.raw_headers: list[tuple[bytes, bytes]] = []
-        _append_headers(self.raw_headers, headers, media_type)
+def _validate_cookie_part(label: str, value: str) -> None:
+    try:
+        validate_header_value(value)
+    except ValueError:
+        raise ValueError(f"Invalid cookie {label}: {value!r}") from None
+
+
+class _CookieMixin:
+    """Shared ``set_cookie``/``delete_cookie`` support for response classes."""
+
+    raw_headers: list[tuple[bytes, bytes]]
 
     def set_cookie(
         self,
@@ -122,6 +113,21 @@ class Response:
         httponly: bool = False,
         samesite: Literal["lax", "strict", "none"] | None = "lax",
     ) -> None:
+        # SimpleCookie does not escape attribute values (path/domain/expires),
+        # so validate every component before building the header line.
+        try:
+            validate_header_name(key)
+        except ValueError:
+            raise ValueError(f"Invalid cookie name: {key!r}") from None
+        _validate_cookie_part("value", value)
+        _validate_cookie_part("path", path)
+        if domain is not None:
+            _validate_cookie_part("domain", domain)
+        if isinstance(expires, str):
+            _validate_cookie_part("expires", expires)
+        if samesite is not None:
+            _validate_cookie_part("samesite", samesite)
+
         cookie: SimpleCookie = SimpleCookie()
         cookie[key] = value
         morsel = cookie[key]
@@ -145,6 +151,7 @@ class Response:
             morsel["samesite"] = samesite
         # SimpleCookie.output() prefixes "Set-Cookie: "; take the value only.
         output = morsel.OutputString()
+        validate_header_value(output)
         self.raw_headers.append((b"set-cookie", output.encode("latin-1")))
 
     def delete_cookie(
@@ -170,6 +177,28 @@ class Response:
         )
 
 
+class Response(_CookieMixin):
+    def __init__(
+        self,
+        content: bytes | str = b"",
+        *,
+        status_code: int = 200,
+        headers: HeadersInput | None = None,
+        media_type: str | None = None,
+    ) -> None:
+        if isinstance(content, str):
+            body = content.encode("utf-8")
+            if media_type is None:
+                media_type = "text/plain; charset=utf-8"
+        else:
+            body = content
+        self.body = body
+        self.status_code = status_code
+        self.media_type = media_type
+        self.raw_headers: list[tuple[bytes, bytes]] = []
+        _append_headers(self.raw_headers, headers, media_type)
+
+
 class JSONResponse(Response):
     def __init__(
         self,
@@ -187,7 +216,7 @@ class JSONResponse(Response):
         )
 
 
-class StreamingResponse:
+class StreamingResponse(_CookieMixin):
     """Chunked ASGI response from a sync or async iterator. No Content-Length."""
 
     def __init__(
@@ -195,7 +224,7 @@ class StreamingResponse:
         content: Iterable[bytes | str] | AsyncIterable[bytes | str],
         *,
         status_code: int = 200,
-        headers: Mapping[str, str] | None = None,
+        headers: HeadersInput | None = None,
         media_type: str | None = None,
     ) -> None:
         self.body_iterator = content
