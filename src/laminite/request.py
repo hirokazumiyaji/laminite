@@ -142,9 +142,7 @@ class Request:
     @property
     def cookies(self) -> dict[str, str]:
         if self._cookies is None:
-            parts = self.headers.getlist("cookie")
-            header = "; ".join(parts) if parts else None
-            self._cookies = parse_cookie_header(header)
+            self._cookies = parse_cookie_header("; ".join(self.headers.getlist("cookie")))
         return self._cookies
 
     @property
@@ -205,7 +203,7 @@ def is_json_content_type(content_type: str | None) -> bool:
     )
 
 
-def parse_cookie_header(header: str | None) -> dict[str, str]:
+def parse_cookie_header(header: str) -> dict[str, str]:
     """Parse a Cookie header into a name→value map (last value wins per name)."""
     if not header:
         return {}

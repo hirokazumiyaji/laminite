@@ -256,14 +256,3 @@ def test_set_cookie_options() -> None:
 def test_mapping_headers_on_response() -> None:
     resp = Response("ok", headers={"X-One": "1"})
     assert (b"x-one", b"1") in resp.raw_headers
-
-
-def test_test_headers_mapping_api() -> None:
-    from laminite.testing import TestHeaders
-
-    headers = TestHeaders([("X-A", "1"), ("X-A", "2")])
-    assert headers["x-a"] == "2"
-    assert headers.get("x-a") == "2"
-    assert headers.getlist("x-a") == ["1", "2"]
-    assert len(headers) == 1
-    assert list(headers) == ["x-a"]

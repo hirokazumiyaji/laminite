@@ -3,61 +3,28 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, TypeVar
 from urllib.parse import urlencode
 
 import msgspec
 
 from laminite.app import Laminite
+from laminite.request import Headers
 from laminite.types import Message
 
 T = TypeVar("T")
-
-
-class TestHeaders(Mapping[str, str]):
-    """Response headers; ``[]`` / ``get`` use the last value, ``getlist`` keeps duplicates."""
-
-    def __init__(self, items: Sequence[tuple[str, str]]) -> None:
-        store: dict[str, str] = {}
-        multi: dict[str, list[str]] = {}
-        for key, value in items:
-            name = key.lower()
-            multi.setdefault(name, []).append(value)
-            store[name] = value
-        self._store = store
-        self._multi = multi
-
-    def __getitem__(self, key: str) -> str:
-        return self._store[key.lower()]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._store)
-
-    def __len__(self) -> int:
-        return len(self._store)
-
-    def get(self, key: str, default: str | None = None) -> str | None:  # type: ignore[override]
-        return self._store.get(key.lower(), default)
-
-    def getlist(self, key: str) -> list[str]:
-        return list(self._multi.get(key.lower(), []))
 
 
 class TestResponse:
     def __init__(
         self,
         status_code: int,
-        headers: Mapping[str, str] | Sequence[tuple[str, str]],
+        headers: Sequence[tuple[bytes, bytes]],
         content: bytes,
     ) -> None:
         self.status_code = status_code
-        if isinstance(headers, TestHeaders):
-            self.headers = headers
-        elif isinstance(headers, Mapping):
-            self.headers = TestHeaders(list(headers.items()))
-        else:
-            self.headers = TestHeaders(headers)
+        self.headers = Headers(headers)
         self.content = content
 
     @property
@@ -232,18 +199,15 @@ class TestClient:
         await self._resolve_http_app()(scope, receive, send)
 
         status = 500
-        resp_header_pairs: list[tuple[str, str]] = []
+        resp_headers: list[tuple[bytes, bytes]] = []
         resp_body = b""
         for message in messages:
             if message["type"] == "http.response.start":
                 status = message["status"]
-                resp_header_pairs = [
-                    (k.decode("latin-1"), v.decode("latin-1"))
-                    for k, v in message.get("headers", [])
-                ]
+                resp_headers = list(message.get("headers", []))
             elif message["type"] == "http.response.body":
                 resp_body += message.get("body", b"")
-        return TestResponse(status, resp_header_pairs, resp_body)
+        return TestResponse(status, resp_headers, resp_body)
 
     def get(self, path: str, **kwargs: Any) -> TestResponse:
         return self.request("GET", path, **kwargs)

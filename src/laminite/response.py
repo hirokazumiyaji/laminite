@@ -9,7 +9,7 @@ import re
 import sys
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime
+from datetime import UTC, datetime
 from http.cookies import SimpleCookie
 from typing import Any, Literal, cast
 
@@ -33,6 +33,8 @@ CONTENT_TYPE_TEXT = (b"content-type", b"text/plain; charset=utf-8")
 CONTENT_TYPE_OCTET = (b"content-type", b"application/octet-stream")
 
 HeadersInput = Mapping[str, str] | Sequence[tuple[str, str]]
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 # One encoder for every body, so success and error responses encode identically.
 _ENCODER = msgspec.json.Encoder()
@@ -112,7 +114,7 @@ class Response:
         value: str = "",
         *,
         max_age: int | None = None,
-        expires: datetime | str | int | None = None,
+        expires: datetime | str | None = None,
         path: str = "/",
         domain: str | None = None,
         secure: bool = False,
@@ -126,7 +128,8 @@ class Response:
             morsel["max-age"] = max_age
         if expires is not None:
             if isinstance(expires, datetime):
-                morsel["expires"] = expires.strftime("%a, %d %b %Y %H:%M:%S GMT")
+                aware = expires if expires.tzinfo is not None else expires.replace(tzinfo=UTC)
+                morsel["expires"] = aware.astimezone(UTC).strftime("%a, %d %b %Y %H:%M:%S GMT")
             else:
                 morsel["expires"] = expires
         morsel["path"] = path
@@ -156,7 +159,7 @@ class Response:
             key,
             "",
             max_age=0,
-            expires=0,
+            expires=_EPOCH,
             path=path,
             domain=domain,
             secure=secure,
