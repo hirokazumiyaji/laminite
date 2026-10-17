@@ -307,5 +307,4 @@ class Laminite:
             raise RuntimeError(f"Unsupported ASGI scope type: {scope_type!r}")
 
 
-# Re-export for typing convenience
 __all__ = ["HTTPException", "Laminite"]

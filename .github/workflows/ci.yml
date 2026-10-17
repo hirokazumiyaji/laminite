@@ -46,7 +46,7 @@ jobs:
             echo '```'
             uv run pytest --cov=laminite --cov-report=term-missing --cov-fail-under=90
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
   microbench:
     name: Microbenchmarks

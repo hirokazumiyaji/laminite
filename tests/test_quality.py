@@ -79,8 +79,6 @@ def test_set_overrides_rejected_when_frozen() -> None:
     def root() -> dict[str, str]:
         return {"ok": "1"}
 
-    client = TestClient(app)
-    client.get("/")
-    client.close()
+    app.freeze()
     with pytest.raises(RuntimeError, match="frozen"):
         app.set_overrides({})

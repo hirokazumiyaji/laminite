@@ -44,8 +44,8 @@ class TestClient:
         self.overrides = overrides
         self._runner = asyncio.Runner()
         self._lifespan_task: asyncio.Task[None] | None = None
-        self._receive_q: asyncio.Queue[dict[str, Any]] | None = None
-        self._send_q: asyncio.Queue[dict[str, Any]] | None = None
+        self._receive_q: asyncio.Queue[Message] | None = None
+        self._send_q: asyncio.Queue[Message] | None = None
         self._entered = False
         self._http_app: Any | None = None
 
