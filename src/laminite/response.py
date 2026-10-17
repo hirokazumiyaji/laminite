@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
@@ -16,6 +17,13 @@ _logger = logging.getLogger("laminite")
 _STREAM_SENTINEL = object()
 # Shared pool for sync stream next()/close(); keep bounded under concurrency.
 _STREAM_EXECUTOR = ThreadPoolExecutor(max_workers=32, thread_name_prefix="laminite-stream")
+
+# Iterator close jobs run on their own pool: the stream pool can be saturated by
+# blocked next() calls (long-lived sync generators), which must not delay close()
+# and with it request-scoped provider cleanup.
+_STREAM_CLOSE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="laminite-stream-close"
+)
 
 CONTENT_TYPE_JSON = (b"content-type", b"application/json")
 CONTENT_TYPE_TEXT = (b"content-type", b"text/plain; charset=utf-8")
@@ -196,11 +204,11 @@ async def send_streaming_response(
         else:
             iterator = iter(content)  # type: ignore[arg-type]
             is_async = False
-    except BaseException:
+    except Exception:
         # Iterator construction failed before any chunk could be produced; emit a
         # 500 so the client sees a response instead of an empty ASGI reply.
         status, headers, body = error_json("Internal Server Error", 500)
-        with contextlib.suppress(BaseException):
+        with contextlib.suppress(Exception):
             await send_response(
                 send, status_code=status, headers=headers, body=body, is_head=is_head
             )
@@ -234,19 +242,26 @@ async def send_streaming_response(
             await send({"type": "http.response.body", "body": b"", "more_body": False})
             return
 
-        if is_async:
-            async for chunk in iterator:
-                data = _chunk_bytes(chunk)
-                if data:
-                    await send({"type": "http.response.body", "body": data, "more_body": True})
-        else:
-            while True:
-                chunk = await run_sync(_sync_next, iterator)
-                if chunk is _STREAM_SENTINEL:
-                    break
-                data = _chunk_bytes(chunk)  # type: ignore[arg-type]
-                if data:
-                    await send({"type": "http.response.body", "body": data, "more_body": True})
+        try:
+            if is_async:
+                async for chunk in iterator:
+                    data = _chunk_bytes(chunk)
+                    if data:
+                        await send({"type": "http.response.body", "body": data, "more_body": True})
+            else:
+                while True:
+                    chunk = await run_sync(_sync_next, iterator)
+                    if chunk is _STREAM_SENTINEL:
+                        break
+                    data = _chunk_bytes(chunk)  # type: ignore[arg-type]
+                    if data:
+                        await send({"type": "http.response.body", "body": data, "more_body": True})
+        except BaseException:
+            # The response already started and cannot be replaced; terminate it
+            # so servers do not abort the connection with an incomplete message.
+            with contextlib.suppress(BaseException):
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+            raise
         await send({"type": "http.response.body", "body": b"", "more_body": False})
     finally:
         # Cancellation does not stop a worker next(). Temporarily uncancel so
@@ -265,13 +280,16 @@ async def send_streaming_response(
                 if is_async:
                     await _force_close_async_iterator(iterator)
                 else:
-                    await loop.run_in_executor(_STREAM_EXECUTOR, _sync_close, iterator)
+                    await loop.run_in_executor(_STREAM_CLOSE_EXECUTOR, _sync_close, iterator)
             except BaseException as close_exc:
                 _logger.warning("Stream iterator close failed", exc_info=close_exc)
         finally:
-            for _ in range(cancel_count):
-                assert task is not None
-                task.cancel()
+            if task is not None and not isinstance(sys.exc_info()[1], asyncio.CancelledError):
+                # Re-arm only when the stream is not already unwinding with
+                # CancelledError: a fresh cancellation would abort the caller's
+                # deferred provider teardown.
+                for _ in range(cancel_count):
+                    task.cancel()
 
 
 def error_json(detail: Any, status_code: int) -> tuple[int, list[tuple[bytes, bytes]], bytes]:

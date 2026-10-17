@@ -349,13 +349,29 @@ def build_pipeline(
                                     else:
                                         exc = cleanup_exc
                         stack = None
-                        if isinstance(exc, (asyncio.CancelledError, _Disconnect)):
+                        rethrow = isinstance(exc, (asyncio.CancelledError, _Disconnect)) or not (
+                            isinstance(exc, Exception)
+                        )
+                        if rethrow:
+                            # Cancellation and interpreter-level exits must keep
+                            # propagating once the stream has started.
                             raise exc
                         logger.error("Streaming response failed", exc_info=exc)
                     else:
                         if stack is not None:
-                            await stack.__aexit__(None, None, None)
-                        stack = None
+                            try:
+                                await stack.__aexit__(None, None, None)
+                            except BaseException as cleanup_exc:
+                                if not isinstance(cleanup_exc, Exception):
+                                    raise
+                                # The stream already completed; a cleanup failure
+                                # must not turn into a second response.
+                                logger.error(
+                                    "Provider cleanup failed after streaming response",
+                                    exc_info=cleanup_exc,
+                                )
+                            finally:
+                                stack = None
                     return
 
                 # Render before successful cleanup so encode failures can roll back.

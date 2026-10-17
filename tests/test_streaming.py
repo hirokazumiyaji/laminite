@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
+from typing import Any
+
+import pytest
 
 from laminite import Laminite, StreamingResponse
 from laminite.testing import TestClient
@@ -12,6 +16,23 @@ from laminite.testing import TestClient
 @dataclass
 class _Conn:
     pass
+
+
+def _http_scope(path: str) -> dict[str, Any]:
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("utf-8"),
+        "query_string": b"",
+        "headers": [],
+        "client": ("test", 1),
+        "server": ("test", 80),
+        "state": {},
+    }
 
 
 def test_sync_generator_streaming() -> None:
@@ -246,3 +267,147 @@ def test_head_closes_async_iterator_without_advancing() -> None:
     assert advanced == []
     assert closed == ["closed"]
     client.close()
+
+
+def test_mid_stream_error_still_terminates_response() -> None:
+    app = Laminite()
+
+    @app.get("/stream")
+    def stream() -> StreamingResponse:
+        def gen() -> Iterator[bytes]:
+            yield b"a"
+            raise RuntimeError("boom")
+
+        return StreamingResponse(gen())
+
+    async def call() -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict[str, Any]) -> None:
+            messages.append(message)
+
+        await app(_http_scope("/stream"), receive, send)
+        return messages
+
+    messages = asyncio.run(call())
+    starts = [m for m in messages if m["type"] == "http.response.start"]
+    assert len(starts) == 1
+    assert messages[-1] == {"type": "http.response.body", "body": b"", "more_body": False}
+
+
+def test_cancelled_stream_still_closes_providers() -> None:
+    app = Laminite()
+    seen: list[str] = []
+
+    @app.provider
+    async def conn() -> AsyncIterator[_Conn]:
+        seen.append("enter")
+        try:
+            yield _Conn()
+        finally:
+            await asyncio.sleep(0)
+            seen.append("exit")
+
+    @app.get("/stream")
+    async def stream(c: _Conn) -> StreamingResponse:
+        async def gen() -> AsyncIterator[bytes]:
+            yield b"a"
+            await asyncio.sleep(30)
+
+        return StreamingResponse(gen())
+
+    async def main() -> None:
+        receive_q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        send_q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        async def receive() -> dict[str, Any]:
+            return await receive_q.get()
+
+        async def send(message: dict[str, Any]) -> None:
+            await send_q.put(message)
+
+        lifespan = asyncio.create_task(app({"type": "lifespan"}, receive, send))
+        await receive_q.put({"type": "lifespan.startup"})
+        assert (await send_q.get())["type"] == "lifespan.startup.complete"
+
+        sent: list[dict[str, Any]] = []
+
+        async def receive_http() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send_http(message: dict[str, Any]) -> None:
+            sent.append(message)
+
+        request = asyncio.create_task(app(_http_scope("/stream"), receive_http, send_http))
+        while not sent:
+            await asyncio.sleep(0)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert seen == ["enter", "exit"]
+
+        await receive_q.put({"type": "lifespan.shutdown"})
+        await send_q.get()
+        await lifespan
+
+    asyncio.run(main())
+
+
+def test_streaming_keyboard_interrupt_propagates() -> None:
+    app = Laminite()
+
+    @app.get("/stream")
+    async def stream() -> StreamingResponse:
+        async def gen() -> AsyncIterator[bytes]:
+            yield b"a"
+            raise KeyboardInterrupt
+
+        return StreamingResponse(gen())
+
+    async def call() -> None:
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict[str, Any]) -> None:
+            pass
+
+        await app(_http_scope("/stream"), receive, send)
+
+    with pytest.raises(KeyboardInterrupt):
+        asyncio.run(call())
+
+
+def test_provider_teardown_failure_after_stream_does_not_send_second_response() -> None:
+    app = Laminite()
+
+    @app.provider
+    async def conn() -> AsyncIterator[_Conn]:
+        yield _Conn()
+        raise RuntimeError("teardown boom")
+
+    @app.get("/stream")
+    async def stream(c: _Conn) -> StreamingResponse:
+        async def gen() -> AsyncIterator[bytes]:
+            yield b"a"
+
+        return StreamingResponse(gen())
+
+    async def call() -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict[str, Any]) -> None:
+            messages.append(message)
+
+        await app(_http_scope("/stream"), receive, send)
+        return messages
+
+    messages = asyncio.run(call())
+    starts = [m for m in messages if m["type"] == "http.response.start"]
+    assert len(starts) == 1
+    assert messages[-1] == {"type": "http.response.body", "body": b"", "more_body": False}
