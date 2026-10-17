@@ -41,6 +41,7 @@ jobs:
 
       - name: Pytest with coverage
         run: |
+          set -o pipefail
           {
             echo "## Coverage (Python ${{ matrix.python-version }})"
             echo '```'
