@@ -129,6 +129,7 @@ def compile_route(
         compiled,
         max_body_size=body_limit,
         max_query_fields=max_query_fields,
+        route_template=info.path,
     )
 
 
@@ -299,6 +300,7 @@ def build_pipeline(
     *,
     max_body_size: int,
     max_query_fields: int,
+    route_template: str,
 ) -> Callable[..., Any]:
     # Bind frequently used fields as locals to avoid attribute lookups per request.
     handler = route.handler
@@ -334,9 +336,11 @@ def build_pipeline(
         path_params: Mapping[str, str],
         is_head: bool,
         exception_handlers: Mapping[type, Callable[..., Any]],
+        on_unhandled_exception: Callable[..., Any] | None,
     ) -> None:
         request: Request | None = None
         kwargs: dict[str, Any] | None = None if bare_call else dict(kw_template)
+        scope[Request.ROUTE_SCOPE_KEY] = route_template
 
         try:
             if needs_request:
@@ -516,28 +520,41 @@ def build_pipeline(
                 if stack is not None:
                     await stack.__aexit__(None, None, None)
 
-            await send_response(
-                send, status_code=status_out, headers=headers, body=body, is_head=is_head
-            )
+            try:
+                await send_response(
+                    send, status_code=status_out, headers=headers, body=body, is_head=is_head
+                )
+            except Exception:
+                # Response already started; the error path would violate ASGI protocol.
+                logger.exception("Failed to send response")
+            return
         except _Disconnect:
             return
         except Exception as exc:
             exc_handler = _find_exception_handler(exception_handlers, exc)
-            if exc_handler is not None:
-                if request is None:
-                    request = Request(
-                        scope,
-                        receive,
-                        path_params=path_params,
-                        max_body_size=max_body_size,
-                        max_query_fields=max_query_fields,
-                    )
-                status_out, headers, body = await _run_exception_handler(exc_handler, request, exc)
-            elif isinstance(exc, HTTPException):
+            if exc_handler is None and isinstance(exc, HTTPException):
                 await _send_http_exception(send, exc, is_head)
                 return
+            if request is None:
+                request = Request(
+                    scope,
+                    receive,
+                    path_params=path_params,
+                    max_body_size=max_body_size,
+                    max_query_fields=max_query_fields,
+                )
+            if exc_handler is not None:
+                try:
+                    status_out, headers, body = await _run_exception_handler(
+                        exc_handler, request, exc
+                    )
+                except Exception as handler_exc:
+                    logger.exception("Exception handler failed")
+                    await _invoke_unhandled_hook(on_unhandled_exception, request, handler_exc)
+                    status_out, headers, body = error_json("Internal Server Error", 500)
             else:
                 logger.exception("Unhandled exception in handler")
+                await _invoke_unhandled_hook(on_unhandled_exception, request, exc)
                 status_out, headers, body = error_json("Internal Server Error", 500)
             await send_response(
                 send, status_code=status_out, headers=headers, body=body, is_head=is_head
@@ -577,17 +594,30 @@ def _find_exception_handler(
     return None
 
 
+async def _maybe_await(result: Any) -> Any:
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
 async def _run_exception_handler(
     handler: Callable[..., Any], request: Request, exc: BaseException
 ) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
+    result = await _maybe_await(handler(request, exc))
+    return render_result(result, status_code=200)
+
+
+async def _invoke_unhandled_hook(
+    hook: Callable[..., Any] | None,
+    request: Request,
+    exc: BaseException,
+) -> None:
+    if hook is None:
+        return
     try:
-        result = handler(request, exc)
-        if inspect.isawaitable(result):
-            result = await result
-        return render_result(result, status_code=200)
+        await _maybe_await(hook(request, exc))
     except Exception:
-        logger.exception("Exception handler failed")
-        return error_json("Internal Server Error", 500)
+        logger.exception("on_unhandled_exception hook failed")
 
 
 def _resolve_source(

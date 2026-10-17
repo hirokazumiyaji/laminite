@@ -34,6 +34,7 @@ class Laminite:
         title: str = "Laminite",
         version: str = "0.1.0",
         openapi_url: str | None = None,
+        on_unhandled_exception: Callable[..., Any] | None = None,
     ) -> None:
         self._lifespan_factory = lifespan
         self._max_body_size = max_body_size
@@ -41,6 +42,7 @@ class Laminite:
         self.title = title
         self.version = version
         self.openapi_url = openapi_url
+        self._on_unhandled_exception = on_unhandled_exception
         self._router: Router[Any] = Router()
         self._routes: list[RouteInfo] = []
         self._registry = DependencyRegistry()
@@ -280,6 +282,7 @@ class Laminite:
                     compiled,
                     max_body_size=body_limit,
                     max_query_fields=self._max_query_fields,
+                    route_template=info.path,
                 )
                 analyzed.append((info, compiled))
             pipeline = pipelines[key]
@@ -305,6 +308,7 @@ class Laminite:
                 analyze_handler(openapi_info, registry),
                 max_body_size=self._max_body_size,
                 max_query_fields=self._max_query_fields,
+                route_template=openapi_info.path,
             )
             router.add(self.openapi_url, "GET", openapi_pipeline)
 
@@ -355,6 +359,7 @@ class Laminite:
             path_params=match.path_params,
             is_head=match.is_head or method == "HEAD",
             exception_handlers=exception_handlers,
+            on_unhandled_exception=self._on_unhandled_exception,
         )
 
     async def _lifespan(self, receive: Receive, send: Send) -> None:
