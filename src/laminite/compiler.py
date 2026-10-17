@@ -40,7 +40,13 @@ from laminite.di import (
 from laminite.exceptions import HTTPException
 from laminite.params import Body, Header, Query
 from laminite.request import Request, _Disconnect
-from laminite.response import error_json, render_result, send_response
+from laminite.response import (
+    StreamingResponse,
+    error_json,
+    render_result,
+    send_response,
+    send_streaming_response,
+)
 
 _QUERY_SCALARS: frozenset[type] = frozenset(
     {str, int, float, bool, bytes, UUID, datetime, date, time, Decimal}
@@ -339,6 +345,49 @@ def build_pipeline(
                     result = await handler(**kwargs)
                 else:
                     result = handler(**kwargs)
+
+                if isinstance(result, StreamingResponse):
+                    # The pipeline cannot emit a replacement body once the stream started.
+                    try:
+                        await send_streaming_response(send, result, is_head=is_head)
+                    except BaseException as exc:
+                        if stack is not None:
+                            try:
+                                await stack.__aexit__(type(exc), exc, exc.__traceback__)
+                            except BaseException as cleanup_exc:
+                                if cleanup_exc is not exc:
+                                    if isinstance(exc, (asyncio.CancelledError, _Disconnect)):
+                                        logger.exception(
+                                            "Provider cleanup failed during streaming cancellation",
+                                            exc_info=cleanup_exc,
+                                        )
+                                    else:
+                                        exc = cleanup_exc
+                        stack = None
+                        rethrow = isinstance(exc, (asyncio.CancelledError, _Disconnect)) or not (
+                            isinstance(exc, Exception)
+                        )
+                        if rethrow:
+                            # Cancellation and interpreter-level exits must keep
+                            # propagating once the stream has started.
+                            raise exc
+                        logger.error("Streaming response failed", exc_info=exc)
+                    else:
+                        if stack is not None:
+                            try:
+                                await stack.__aexit__(None, None, None)
+                            except BaseException as cleanup_exc:
+                                if not isinstance(cleanup_exc, Exception):
+                                    raise
+                                # The stream already completed; a cleanup failure
+                                # must not turn into a second response.
+                                logger.error(
+                                    "Provider cleanup failed after streaming response",
+                                    exc_info=cleanup_exc,
+                                )
+                            finally:
+                                stack = None
+                    return
 
                 # Render before successful cleanup so encode failures can roll back.
                 status_out, headers, body = render_result(
