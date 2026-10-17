@@ -88,13 +88,13 @@ class Request:
         scope: dict[str, Any],
         receive: Any,
         *,
-        path_params: dict[str, str] | None = None,
+        path_params: Mapping[str, str] | None = None,
         max_body_size: int = 1_048_576,
         max_query_fields: int | None = 1000,
     ) -> None:
         self.scope = scope
         self._receive = receive
-        self._path_params = path_params if path_params is not None else {}
+        self._path_params: Mapping[str, str] = path_params if path_params is not None else {}
         self._headers: Headers | None = None
         self._query_params: QueryParams | None = None
         self._body: bytes | None = None
@@ -110,7 +110,7 @@ class Request:
         return self.scope["path"]  # type: ignore[no-any-return]
 
     @property
-    def path_params(self) -> dict[str, str]:
+    def path_params(self) -> Mapping[str, str]:
         return self._path_params
 
     @property

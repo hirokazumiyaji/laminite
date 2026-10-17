@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TypeVar
 
 V = TypeVar("V")
 
 _PARAM_RE = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Read-only shared empty path-params for prebuilt static Matches: a mutable
+# singleton here would leak writes across every static resolve.
+_EMPTY_PARAMS: Mapping[str, str] = MappingProxyType({})
 
 
 class NotFound(Exception):
@@ -24,7 +30,7 @@ class MethodNotAllowed(Exception):
 @dataclass(slots=True)
 class Match[V]:
     value: V
-    path_params: dict[str, str]
+    path_params: Mapping[str, str]
     is_head: bool = False
 
 
@@ -42,6 +48,8 @@ class _Node[V]:
 class Router[V]:
     def __init__(self) -> None:
         self._static: dict[str, dict[str, V]] = {}
+        # Prebuilt Matches for static paths (includes HEAD→GET fallback entries).
+        self._static_matches: dict[str, dict[str, Match[V]]] = {}
         self._root: _Node[V] = _Node()
 
     def add(self, path: str, method: str, value: V) -> None:
@@ -87,16 +95,30 @@ class Router[V]:
                 del methods[method]
                 if not methods:
                     del self._static[path]
+                    self._static_matches.pop(path, None)
+                else:
+                    self._rebuild_static_matches(path)
             raise
+
+        if is_static:
+            self._rebuild_static_matches(path)
+
+    def _rebuild_static_matches(self, path: str) -> None:
+        methods = self._static[path]
+        matches: dict[str, Match[V]] = {
+            method: Match(value, _EMPTY_PARAMS) for method, value in methods.items()
+        }
+        if "GET" in methods and "HEAD" not in methods:
+            matches["HEAD"] = Match(methods["GET"], _EMPTY_PARAMS, is_head=True)
+        self._static_matches[path] = matches
 
     def resolve(self, method: str, path: str) -> Match[V]:
         method = method.upper()
-        static_methods = self._static.get(path)
-        if static_methods is not None:
-            if method in static_methods:
-                return Match(static_methods[method], {})
-            if method == "HEAD" and "GET" in static_methods:
-                return Match(static_methods["GET"], {}, is_head=True)
+        static_matches = self._static_matches.get(path)
+        if static_matches is not None:
+            hit = static_matches.get(method)
+            if hit is not None:
+                return hit
 
         parts = _split_path(path)
         match, allowed = self._search(self._root, parts, 0, [], method)
@@ -104,6 +126,7 @@ class Router[V]:
             return match
         if allowed is not None:
             raise MethodNotAllowed(allowed)
+        static_methods = self._static.get(path)
         if static_methods is not None:
             raise MethodNotAllowed(_allow_set(static_methods))
         raise NotFound()
