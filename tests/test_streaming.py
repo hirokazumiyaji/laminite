@@ -202,6 +202,24 @@ def test_response_bytes_content_without_media_type() -> None:
     assert resp.media_type is None
 
 
+def test_streaming_iterator_construction_failure_returns_500() -> None:
+    app = Laminite()
+
+    class _Boom:
+        def __iter__(self) -> Iterator[bytes]:
+            raise RuntimeError("iter failed")
+
+    @app.get("/stream")
+    def stream() -> StreamingResponse:
+        return StreamingResponse(_Boom())
+
+    client = TestClient(app)
+    res = client.get("/stream")
+    assert res.status_code == 500
+    assert res.json() == {"detail": "Internal Server Error"}
+    client.close()
+
+
 def test_head_closes_async_iterator_without_advancing() -> None:
     closed: list[str] = []
     advanced: list[str] = []

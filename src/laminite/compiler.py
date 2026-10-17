@@ -332,31 +332,30 @@ def build_pipeline(
                     result = handler(**kwargs)
 
                 if isinstance(result, StreamingResponse):
-                    stream_error: BaseException | None = None
+                    # The pipeline cannot emit a replacement body once the stream started.
                     try:
                         await send_streaming_response(send, result, is_head=is_head)
                     except BaseException as exc:
-                        stream_error = exc
-                    finally:
                         if stack is not None:
                             try:
-                                await stack.__aexit__(
-                                    type(stream_error) if stream_error else None,
-                                    stream_error,
-                                    stream_error.__traceback__ if stream_error else None,
-                                )
+                                await stack.__aexit__(type(exc), exc, exc.__traceback__)
                             except BaseException as cleanup_exc:
-                                if stream_error is None or cleanup_exc is not stream_error:
-                                    stream_error = cleanup_exc
+                                if cleanup_exc is not exc:
+                                    if isinstance(exc, (asyncio.CancelledError, _Disconnect)):
+                                        logger.exception(
+                                            "Provider cleanup failed during streaming cancellation",
+                                            exc_info=cleanup_exc,
+                                        )
+                                    else:
+                                        exc = cleanup_exc
                         stack = None
-                    # Response start was already sent; never emit a replacement body.
-                    if stream_error is not None:
-                        if isinstance(stream_error, (asyncio.CancelledError, _Disconnect)):
-                            raise stream_error
-                        logger.exception(
-                            "Streaming response failed after start",
-                            exc_info=stream_error,
-                        )
+                        if isinstance(exc, (asyncio.CancelledError, _Disconnect)):
+                            raise exc
+                        logger.error("Streaming response failed", exc_info=exc)
+                    else:
+                        if stack is not None:
+                            await stack.__aexit__(None, None, None)
+                        stack = None
                     return
 
                 # Render before successful cleanup so encode failures can roll back.

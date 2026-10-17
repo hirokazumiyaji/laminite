@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 import msgspec
+
+_logger = logging.getLogger("laminite")
 
 _STREAM_SENTINEL = object()
 # Shared pool for sync stream next()/close(); keep bounded under concurrency.
@@ -170,12 +174,6 @@ def _sync_close(iterator: Any) -> None:
         close()
 
 
-def _as_sync_iterator(content: Iterable[bytes | str]) -> Any:
-    if hasattr(content, "__next__"):
-        return content
-    return iter(content)
-
-
 async def _force_close_async_iterator(iterator: Any) -> None:
     aclose = getattr(iterator, "aclose", None)
     if callable(aclose):
@@ -191,12 +189,22 @@ async def send_streaming_response(
     is_head: bool,
 ) -> None:
     content = response.body_iterator
-    if hasattr(content, "__aiter__"):
-        iterator: Any = aiter(content)  # type: ignore[arg-type]
-        is_async = True
-    else:
-        iterator = _as_sync_iterator(content)  # type: ignore[arg-type]
-        is_async = False
+    try:
+        if hasattr(content, "__aiter__"):
+            iterator: Any = aiter(content)  # type: ignore[arg-type]
+            is_async = True
+        else:
+            iterator = iter(content)  # type: ignore[arg-type]
+            is_async = False
+    except BaseException:
+        # Iterator construction failed before any chunk could be produced; emit a
+        # 500 so the client sees a response instead of an empty ASGI reply.
+        status, headers, body = error_json("Internal Server Error", 500)
+        with contextlib.suppress(BaseException):
+            await send_response(
+                send, status_code=status, headers=headers, body=body, is_head=is_head
+            )
+        raise
 
     loop = asyncio.get_running_loop()
     pending_cf: Future[Any] | None = None
@@ -222,7 +230,7 @@ async def send_streaming_response(
         )
 
         if is_head:
-            # Do not advance the iterator; just close and send an empty body.
+            # HEAD must not advance the body; the outer finally handles close.
             await send({"type": "http.response.body", "body": b"", "more_body": False})
             return
 
@@ -250,11 +258,16 @@ async def send_streaming_response(
             task.uncancel()
         try:
             if pending_cf is not None and not pending_cf.done():
-                await asyncio.wrap_future(pending_cf, loop=loop)
-            if is_async:
-                await _force_close_async_iterator(iterator)
-            else:
-                await loop.run_in_executor(_STREAM_EXECUTOR, _sync_close, iterator)
+                # Must not shadow the primary exception; close still has to run.
+                with contextlib.suppress(BaseException):
+                    await asyncio.wrap_future(pending_cf, loop=loop)
+            try:
+                if is_async:
+                    await _force_close_async_iterator(iterator)
+                else:
+                    await loop.run_in_executor(_STREAM_EXECUTOR, _sync_close, iterator)
+            except BaseException as close_exc:
+                _logger.warning("Stream iterator close failed", exc_info=close_exc)
         finally:
             for _ in range(cancel_count):
                 assert task is not None
