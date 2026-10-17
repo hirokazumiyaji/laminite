@@ -105,7 +105,8 @@ class Laminite:
             path_param_names=path_parameter_names(path),
         )
         self._routes.append(info)
-        # Placeholder value; replaced at freeze with pipeline.
+        # Registration-time validation only (duplicate routes, param-name
+        # conflicts); dispatch uses the frozen table built in _build_http_asgi.
         for method in methods_t:
             self._router.add(path, method, info)
 
@@ -153,9 +154,35 @@ class Laminite:
         self._http = self._build_http_asgi(self._registry.with_overrides(self._overrides))
         self._frozen = True
 
+    def _merge_unresolvable_overrides(self, overrides: Mapping[type, Any] | None) -> None:
+        """Fold override types the base registry cannot resolve into ``_overrides``.
+
+        Freeze-time dependency analysis must recognize types that only a
+        TestClient's overrides supply, or route compilation fails with
+        ``Unregistered dependency``. Registered types stay per-client via
+        ``http_with_overrides``; only unresolvable types are folded into the
+        shared app, because no other binding exists for them at freeze time.
+        """
+        if self._frozen or not overrides:
+            return
+        current = dict(self._overrides or {})
+        changed = False
+        for tp, instance in overrides.items():
+            if tp not in current and not self._registry.has(tp):
+                current[tp] = instance
+                changed = True
+        if changed:
+            self._overrides = current
+
     def http_with_overrides(self, overrides: Mapping[type, Any]) -> ASGIApp:
-        """Return an HTTP ASGI app with dependency overrides; does not mutate this app."""
+        """Return an HTTP ASGI app with dependency overrides.
+
+        The base registry is left untouched; only override types with no
+        binding at all are folded into a first freeze (see
+        ``_merge_unresolvable_overrides``).
+        """
         if not self._frozen:
+            self._merge_unresolvable_overrides(overrides)
             self.freeze()
         return self._build_http_asgi(
             self._registry.with_overrides(self._overrides).with_overrides(overrides)

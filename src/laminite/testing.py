@@ -53,6 +53,10 @@ class TestClient:
         self._receive_q = asyncio.Queue()
         self._send_q = asyncio.Queue()
 
+        # Make override-only types visible to the freeze-time dependency
+        # analysis that lifespan startup runs on the shared app.
+        self.app._merge_unresolvable_overrides(self.overrides)
+
         async def lifespan_call() -> None:
             assert self._receive_q is not None and self._send_q is not None
 

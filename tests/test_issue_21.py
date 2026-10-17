@@ -84,3 +84,31 @@ def test_http_exception_handler_receives_413_from_body() -> None:
     assert res.status_code == 413
     assert res.text == "handled:413:Payload Too Large"
     client.close()
+
+
+def test_overrides_for_unregistered_type_compile_on_freeze() -> None:
+    app = Laminite()
+
+    @app.get("/")
+    def root(svc: Svc) -> dict[str, str]:
+        return {"name": svc.name}
+
+    with TestClient(app, overrides={Svc: Svc("fake")}) as client:
+        assert client.get("/").json() == {"name": "fake"}
+
+    # No other binding existed at freeze time, so the shared app keeps the only
+    # available instance; later clients of the same app still work.
+    with TestClient(app) as client:
+        assert client.get("/").json() == {"name": "fake"}
+
+
+def test_overrides_for_unregistered_type_without_lifespan() -> None:
+    app = Laminite()
+
+    @app.get("/")
+    def root(svc: Svc) -> dict[str, str]:
+        return {"name": svc.name}
+
+    client = TestClient(app, overrides={Svc: Svc("fake")})
+    assert client.get("/").json() == {"name": "fake"}
+    client.close()
