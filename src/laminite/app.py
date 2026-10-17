@@ -157,7 +157,9 @@ class Laminite:
         """Return an HTTP ASGI app with dependency overrides; does not mutate this app."""
         if not self._frozen:
             self.freeze()
-        return self._build_http_asgi(self._registry.with_overrides(overrides))
+        return self._build_http_asgi(
+            self._registry.with_overrides(self._overrides).with_overrides(overrides)
+        )
 
     def _build_http_asgi(self, registry: DependencyRegistry) -> ASGIApp:
         pipelines: dict[int, Any] = {}

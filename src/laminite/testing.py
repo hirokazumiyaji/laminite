@@ -100,7 +100,7 @@ class TestClient:
     def _resolve_http_app(self) -> Any:
         if self._http_app is not None:
             return self._http_app
-        if self.overrides is None:
+        if not self.overrides:
             self._http_app = self.app
         else:
             self._http_app = self.app.http_with_overrides(self.overrides)
