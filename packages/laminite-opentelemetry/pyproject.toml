@@ -1,0 +1,41 @@
+[project]
+name = "laminite-opentelemetry"
+version = "0.1.0"
+description = "OpenTelemetry instrumentation for Laminite"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Hirokazu Miyaji", email = "hirokazu.miyaji@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    # Needs laminite.route / on_unhandled_exception from #29, first shipped in 0.2.0.
+    "laminite>=0.2.0",
+    "opentelemetry-api>=1.20",
+    "opentelemetry-instrumentation-asgi>=0.41b0",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/hirokazumiyaji/laminite"
+Repository = "https://github.com/hirokazumiyaji/laminite"
+Issues = "https://github.com/hirokazumiyaji/laminite/issues"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "laminite_opentelemetry"
+module-root = "src"
