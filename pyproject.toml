@@ -55,7 +55,7 @@ bench = [
     "fastapi>=0.115",
     "granian>=1.0",
     "litestar>=2.0",
-    "pyperf>=2.0",
+    "pydantic>=2",
     "starlette>=0.40",
 ]
 
