@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -34,13 +35,7 @@ def test_span_name_and_http_route_for_matched_path() -> None:
     client.close()
 
     spans = exporter.get_finished_spans()
-    server = [
-        s
-        for s in spans
-        if s.kind.name == "SERVER"
-        or "http" in (s.name or "").lower()
-        or s.name.startswith("GET")
-    ]
+    server = [s for s in spans if s.kind.name == "SERVER"]
     assert server, spans
     span = server[-1]
     assert span.name == "GET /items/{item_id}"
@@ -103,12 +98,8 @@ def test_instrument_after_freeze_raises() -> None:
     client.get("/")
     client.close()
 
-    try:
+    with pytest.raises(RuntimeError):
         instrument_app(app)
-        raised = False
-    except RuntimeError:
-        raised = True
-    assert raised
 
 
 def test_instrument_app_is_idempotent() -> None:
@@ -160,3 +151,27 @@ def test_otel_is_outermost_when_other_middleware_exists() -> None:
 
     assert seen_recording == [True]
     assert exporter.get_finished_spans()
+
+
+def test_instrument_app_awaits_async_previous_hook() -> None:
+    """A user-supplied async on_unhandled_exception must still be awaited after instrument_app."""
+    provider, _ = _setup_tracer()
+    seen: list[BaseException] = []
+
+    async def previous(request: object, exc: BaseException) -> None:
+        seen.append(exc)
+
+    app = Laminite(on_unhandled_exception=previous)
+
+    @app.get("/boom")
+    def boom() -> None:
+        raise RuntimeError("fail")
+
+    instrument_app(app, tracer_provider=provider)
+
+    client = TestClient(app)
+    assert client.get("/boom").status_code == 500
+    client.close()
+
+    assert len(seen) == 1
+    assert isinstance(seen[0], RuntimeError)
