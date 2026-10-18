@@ -45,6 +45,9 @@ _ENCODER = msgspec.json.Encoder()
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _HEADER_VALUE_INVALID_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 
+# Framing is set by Laminite itself; callers must not smuggle these in.
+_FRAMING_HEADERS = frozenset({b"content-length", b"transfer-encoding"})
+
 
 def validate_header_name(name: str) -> None:
     if not _HEADER_NAME_RE.fullmatch(name):
@@ -70,6 +73,17 @@ def encode_header_pair(name: str, value: str) -> tuple[bytes, bytes]:
     return name.lower().encode("latin-1"), value.encode("latin-1")
 
 
+def append_header(
+    raw_headers: list[tuple[bytes, bytes]],
+    name: str,
+    value: str,
+) -> None:
+    """Append a caller-supplied header unless it would override framing."""
+    pair = encode_header_pair(name, value)
+    if pair[0] not in _FRAMING_HEADERS:
+        raw_headers.append(pair)
+
+
 def _iter_header_pairs(headers: HeadersInput) -> list[tuple[str, str]]:
     if isinstance(headers, Mapping):
         return list(headers.items())
@@ -83,7 +97,7 @@ def _append_headers(
 ) -> None:
     if headers:
         for key, value in _iter_header_pairs(headers):
-            raw_headers.append(encode_header_pair(key, value))
+            append_header(raw_headers, key, value)
     if media_type is not None:
         raw_headers.append(encode_header_pair("content-type", media_type))
 
@@ -281,12 +295,9 @@ async def send_response(
     body: bytes,
     is_head: bool,
 ) -> None:
-    # Framing is ours to set; a caller-supplied Content-Length or Transfer-Encoding
-    # could disagree with the body (RFC 9112 forbids sending both together).
-    header_list = [
-        pair for pair in headers if pair[0] not in (b"content-length", b"transfer-encoding")
-    ]
-    header_list.append((b"content-length", str(len(body)).encode("latin-1")))
+    # Framing headers were dropped when the response headers were built. Copy
+    # the list so callers can reuse it without accumulating Content-Length.
+    header_list = [*headers, (b"content-length", str(len(body)).encode("latin-1"))]
     await send(
         {
             "type": "http.response.start",
