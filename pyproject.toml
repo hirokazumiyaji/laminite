@@ -1,6 +1,6 @@
 [project]
 name = "laminite"
-version = "0.1.0"
+version = "0.2.0"
 description = "A minimal ASGI web framework with msgspec and startup-time compilation"
 readme = "README.md"
 license = "MIT"

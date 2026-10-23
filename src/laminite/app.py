@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any, TypeVar
 
+from laminite._version import __version__
 from laminite.compiler import CompiledRoute, RouteInfo, analyze_handler, build_pipeline
 from laminite.di import DependencyRegistry
 from laminite.exceptions import HTTPException
@@ -32,7 +33,7 @@ class Laminite:
         max_body_size: int = 1_048_576,
         max_query_fields: int = 1000,
         title: str = "Laminite",
-        version: str = "0.1.0",
+        version: str = __version__,
         openapi_url: str | None = None,
         on_unhandled_exception: Callable[..., Any] | None = None,
     ) -> None:
