@@ -53,11 +53,31 @@ granian --interface asgi module:app
 ## Features
 
 - Static map + segment-trie routing (404 / 405 / HEAD→GET)
-- Typed path, query, and header binding via msgspec
+- `APIRouter` sub-routers, flattened into the app at include time
+- Typed path, query, header, and cookie binding via msgspec, including `msgspec.Meta`
+- `{name:path}` wildcard path parameters and multi-value headers
 - JSON body decode with `msgspec.Struct` or `Annotated[..., Body()]`
+- `Response`, `JSONResponse`, and `StreamingResponse` (SSE-friendly) with `set_cookie`
+- OpenAPI 3.1 document generation at freeze time (`openapi_url=...`)
 - Type-keyed dependency injection (app / request scope)
-- Lifespan, ASGI middleware, exception handlers
+- Lifespan, ASGI middleware, exception handlers, and an unhandled-exception hook
+- Route templates exposed on the request scope for instrumentation
 - Zero-dependency `TestClient`
+
+## OpenTelemetry
+
+[`laminite-opentelemetry`](packages/laminite-opentelemetry/README.md) records OpenTelemetry spans
+for requests:
+
+```bash
+pip install laminite-opentelemetry
+```
+
+```python
+from laminite_opentelemetry import instrument_app
+
+instrument_app(app)
+```
 
 ## Dependency policy
 
@@ -66,8 +86,10 @@ granian --interface asgi module:app
 ## Documentation
 
 - [Design](docs/design.md)
-- [User guide](docs/guide/index.md)
+- [User guide](docs/guide/index.md): routing and `APIRouter`, parameters and cookies, responses
+  and streaming, dependencies, OpenAPI, error handling, testing
 - [Benchmarks](docs/benchmarks.md)
+- [Changelog](CHANGELOG.md)
 
 ## License
 
