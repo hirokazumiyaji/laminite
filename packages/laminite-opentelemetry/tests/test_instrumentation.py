@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version
+
 import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
+import laminite_opentelemetry
 from laminite import Laminite
 from laminite.testing import TestClient
 from laminite_opentelemetry import instrument_app
+
+
+def test_version_is_resolved_from_metadata() -> None:
+    assert laminite_opentelemetry.__version__ == version("laminite-opentelemetry")
 
 
 def _setup_tracer() -> tuple[TracerProvider, InMemorySpanExporter]:
